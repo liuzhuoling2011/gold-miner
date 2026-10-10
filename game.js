@@ -4,7 +4,7 @@
  * Physics/layouts/SFX from original SWF (CWS v6, 550×400 @18fps)
  */
 const W = 550, H = 400, FPS = 18;
-const ASSET_VER = '2';
+const ASSET_VER = '4';
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
@@ -23,14 +23,22 @@ addEventListener('resize', fit);
 
 const images = {};
 const TITLE_PACK = [
-  ['titleMiner', 'assets/ui/title_miner.webp'],
-  ['startBtn', 'assets/ui/start_btn.webp'],
-  ['controls', 'assets/ui/controls.webp'],
+  ['titleScreen', 'assets/ui/title_screen.webp'],
+];
+const TITLE_PACK_2X = [
+  ['titleScreen', 'assets/ui/title_screen@2x.webp'],
 ];
 const PLAY_PACK = [
   ['playBg', 'assets/ui/play_bg.webp'],
-  ['hudPanel', 'assets/ui/hud_panel.webp'],
+  ['goalSplash', 'assets/ui/goal_splash.webp'],
+  ['shopPanel', 'assets/ui/shop_panel.webp'],
   ['shopkeeper', 'assets/ui/shopkeeper.webp'],
+  ['shopDyn', 'assets/shop/dyn.webp'],
+  ['shopStr', 'assets/shop/str.webp'],
+  ['shopClover', 'assets/shop/clover.webp'],
+  ['shopRock', 'assets/shop/rock.webp'],
+  ['shopDia', 'assets/shop/dia.webp'],
+  ['shopNext', 'assets/shop/next.webp'],
   ['minerIdle', 'assets/miner/idle.webp'],
   ['minerDown', 'assets/miner/down.webp'],
   ['minerUp', 'assets/miner/up.webp'],
@@ -55,6 +63,9 @@ const PLAY_PACK = [
   ['skull', 'assets/items/skull.webp'],
   ['tnt', 'assets/items/tnt.webp'],
 ];
+const PLAY_PACK_2X = [
+  ['playBg', 'assets/ui/play_bg@2x.webp'],
+];
 const SFX_NAMES = ['level','win','money','click','grab','tick','throw','boom','drop','hit','score'];
 
 function loadImage(key, url) {
@@ -64,6 +75,24 @@ function loadImage(key, url) {
     im.onerror = () => rej(new Error(url));
     im.src = url + (url.includes('?') ? '&' : '?') + 'v=' + ASSET_VER;
   });
+}
+async function loadPack(pack, pack2x) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const use2x = dpr >= 1.5 && pack2x;
+  const list = use2x ? pack.map(([k, u]) => {
+    const alt = pack2x.find(p => p[0] === k);
+    return alt || [k, u];
+  }) : pack;
+  // merge: for keys in pack2x use 2x, else 1x from pack
+  const merged = [];
+  const seen = new Set();
+  if (use2x) {
+    for (const [k, u] of pack2x) { merged.push([k, u]); seen.add(k); }
+  }
+  for (const [k, u] of pack) {
+    if (!seen.has(k)) merged.push([k, u]);
+  }
+  for (const [k, u] of merged) await loadImage(k, u);
 }
 
 let audioCtx = null;
@@ -157,6 +186,7 @@ let minerPose = 'idle'; // idle | down | up | pull | throw
 let throwTimer = 0;
 let boomFx = null; // {x,y,life}
 let dropSfxCool = 0;
+let goalTimer = 0;
 
 function resetRun() {
   score = 0; level = 1; levelDis = 1;
@@ -165,7 +195,11 @@ function resetRun() {
   strengthBoost = 0; strengthFlag = 0;
   rockBonus = 0; diamondBonus = 0; cloverBonus = 0;
   goalAddOn = 275; goal = 375 + goalAddOn;
-  startLevel();
+  showGoal();
+}
+function showGoal() {
+  mode = 'goal';
+  goalTimer = 0;
 }
 
 function effectiveStrength() {
@@ -361,7 +395,7 @@ function nextLevel() {
   levelDis += 1;
   level += 1;
   if (level > 10) { mode = 'win'; return; }
-  startLevel();
+  showGoal();
 }
 
 // ----- Fixed 18fps logic step (matches SWF timeline) -----
@@ -466,32 +500,55 @@ function drawPlayBg() {
 }
 
 function drawHUD() {
-  if (images.hudPanel) {
-    ctx.drawImage(images.hudPanel, 8, 6, 150, 72);
-    ctx.drawImage(images.hudPanel, W - 118, 6, 110, 48);
-  } else {
-    ctx.fillStyle = 'rgba(12,20,40,0.72)';
-    roundRect(8, 6, 150, 72, 8); ctx.fill();
-    ctx.strokeStyle = '#e0b84a'; ctx.lineWidth = 1.5; ctx.stroke();
-    roundRect(W - 118, 6, 110, 48, 8); ctx.fill(); ctx.stroke();
-  }
-  ctx.fillStyle = '#ffe9a0';
-  ctx.font = 'bold 14px "Microsoft YaHei",sans-serif';
+  // Original SWF: yellow top bar with 金钱/目标钱数 left, 时间/第N关 right
   ctx.textAlign = 'left';
-  ctx.fillText('金钱 $' + score, 18, 28);
-  ctx.fillText('目标 $' + goal, 18, 48);
-  ctx.fillText('关卡 ' + levelDis, 18, 68);
-  ctx.fillStyle = timeLeft <= 10 ? '#ff6b6b' : '#ffe9a0';
+  ctx.font = 'bold 14px "Microsoft YaHei","PingFang SC",sans-serif';
+  ctx.fillStyle = '#4a2e0a';
+  ctx.fillText('金钱：', 12, 24);
+  ctx.fillStyle = '#1dbd2a';
   ctx.font = 'bold 16px "Microsoft YaHei",sans-serif';
-  ctx.fillText('时间 ' + Math.ceil(timeLeft), W - 106, 36);
+  ctx.fillText('$' + score, 58, 25);
+  ctx.fillStyle = '#4a2e0a';
+  ctx.font = 'bold 13px "Microsoft YaHei",sans-serif';
+  ctx.fillText('目标钱数：', 12, 48);
+  ctx.fillStyle = '#6b3f12';
+  ctx.fillText('$' + goal, 88, 48);
+
+  ctx.fillStyle = '#4a2e0a';
+  ctx.font = 'bold 13px "Microsoft YaHei",sans-serif';
+  ctx.fillText('时间：', W - 118, 24);
+  ctx.fillStyle = timeLeft <= 10 ? '#e23a2a' : '#e07020';
+  ctx.font = 'bold 16px "Microsoft YaHei",sans-serif';
+  ctx.fillText(String(Math.ceil(timeLeft)), W - 72, 25);
+  ctx.fillStyle = '#4a2e0a';
+  ctx.font = 'bold 13px "Microsoft YaHei",sans-serif';
+  ctx.fillText('第', W - 118, 48);
+  ctx.fillStyle = '#e07020';
+  ctx.font = 'bold 15px "Microsoft YaHei",sans-serif';
+  ctx.fillText(String(levelDis), W - 96, 48);
+  ctx.fillStyle = '#4a2e0a';
+  ctx.font = 'bold 13px "Microsoft YaHei",sans-serif';
+  ctx.fillText('关', W - 78, 48);
+
+  // exit-level chip (visual only / tap returns to title)
+  ctx.fillStyle = '#f0c040';
+  roundRect(W - 200, 8, 56, 28, 6); ctx.fill();
+  ctx.strokeStyle = '#a07820'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = '#5a3a10';
+  ctx.font = '11px "Microsoft YaHei",sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('退出', W - 172, 20);
+  ctx.fillText('本关', W - 172, 32);
+  ctx.textAlign = 'left';
 
   if (stick > 0) {
-    ctx.fillStyle = 'rgba(12,20,40,0.72)';
-    roundRect(W - 118, 58, 110, 26, 8); ctx.fill();
-    ctx.strokeStyle = '#e0b84a'; ctx.stroke();
-    ctx.fillStyle = '#ffb347';
-    ctx.font = '13px "Microsoft YaHei",sans-serif';
-    ctx.fillText('炸药 ×' + stick, W - 106, 76);
+    ctx.fillStyle = 'rgba(80,40,10,0.55)';
+    roundRect(W - 200, 42, 56, 20, 5); ctx.fill();
+    ctx.fillStyle = '#fff3c0';
+    ctx.font = '11px "Microsoft YaHei",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('炸药×' + stick, W - 172, 56);
+    ctx.textAlign = 'left';
   }
 }
 
@@ -539,8 +596,8 @@ function drawClaw() {
   ctx.translate(tip.x, tip.y);
   ctx.rotate(claw.angleDeg * Math.PI / 180);
   if (hk) {
-    const s = 36;
-    ctx.drawImage(hk, -s / 2, -4, s, s);
+    const s = 42;
+    ctx.drawImage(hk, -s / 2, -6, s, s);
   } else {
     ctx.strokeStyle = '#c8ccd0';
     ctx.lineWidth = 2;
@@ -593,56 +650,105 @@ function drawItems() {
 function drawTitle() {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
-  if (images.titleMiner) ctx.drawImage(images.titleMiner, W - 270, 20, 260, 370);
-  if (images.startBtn) ctx.drawImage(images.startBtn, 40, 40, 240, 220);
-  else {
+  if (images.titleScreen) {
+    ctx.drawImage(images.titleScreen, 0, 0, W, H);
+  } else {
     ctx.fillStyle = '#f5d76e';
     ctx.font = 'bold 48px sans-serif';
     ctx.fillText('开始', 100, 160);
   }
-  if (images.controls) ctx.drawImage(images.controls, 20, 280, 260, 110);
-  ctx.fillStyle = '#f5d76e';
-  ctx.font = 'bold 22px sans-serif';
-  ctx.fillText('黄金矿工', 18, 28);
-  if (isTouch) {
-    ctx.font = '13px sans-serif';
-    ctx.fillStyle = '#ccc';
-    ctx.fillText('点金块开始 · 游戏中点屏幕放钩', 18, H - 12);
+}
+
+function drawGoal() {
+  if (images.goalSplash) ctx.drawImage(images.goalSplash, 0, 0, W, H);
+  else {
+    ctx.fillStyle = '#1a0a00'; ctx.fillRect(0, 0, W, H);
   }
+  ctx.fillStyle = '#22cc33';
+  ctx.font = 'bold 40px "Microsoft YaHei",sans-serif';
+  ctx.textAlign = 'center';
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+  ctx.lineWidth = 4;
+  ctx.strokeText('$' + goal, W / 2, 240);
+  ctx.fillText('$' + goal, W / 2, 240);
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  roundRect(W / 2 - 110, 300, 220, 28, 8); ctx.fill();
+  ctx.fillStyle = '#fff8d0';
+  ctx.font = '14px "Microsoft YaHei",sans-serif';
+  ctx.fillText(isTouch ? '点屏幕继续' : '点击或按 Enter 继续', W / 2, 320);
+  ctx.textAlign = 'left';
 }
 
 function drawShop() {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
-  if (images.shopkeeper) ctx.drawImage(images.shopkeeper, 0, 40, W, H - 40);
-  ctx.fillStyle = 'rgba(0,0,0,0.7)';
-  roundRect(16, 12, W - 32, 96, 10); ctx.fill();
+  if (images.shopPanel) ctx.drawImage(images.shopPanel, 0, H - 347, 550, 347);
+  else if (images.shopkeeper) ctx.drawImage(images.shopkeeper, 0, 40, W, H - 40);
+
+  // instruction banner
+  ctx.fillStyle = 'rgba(0,0,0,0.72)';
+  roundRect(16, 10, W - 140, 70, 8); ctx.fill();
   ctx.strokeStyle = '#e0b84a'; ctx.lineWidth = 1.5; ctx.stroke();
   ctx.fillStyle = '#ffe9a0';
-  ctx.font = 'bold 18px "Microsoft YaHei",sans-serif';
-  ctx.fillText('商店 — 金钱 $' + score, 28, 40);
-  ctx.font = '13px "Microsoft YaHei",sans-serif';
+  ctx.font = 'bold 15px "Microsoft YaHei",sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('金钱 $' + score + '　　炸药 ×' + stick, 28, 34);
+  ctx.font = '12px "Microsoft YaHei",sans-serif';
   ctx.fillStyle = '#ddd';
   const sel = shopItems[shopSel];
-  ctx.fillText(sel ? (sel.name + '：$' + sel.price + ' — ' + sel.desc) : '点击商品购买，或点「下一关」', 28, 64);
-  ctx.fillText('炸药持有：' + stick, 28, 88);
+  const tip = sel ? (sel.name + ' $' + sel.price + ' — ' + sel.desc) : '点击下面的物品即可买卖，买好后点下一关';
+  wrapText(tip, 28, 54, W - 180, 16);
 
+  // next button
+  if (images.shopNext) {
+    ctx.drawImage(images.shopNext, W - 132, 14, 112, 40);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 16px "Microsoft YaHei",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('下一关', W - 76, 40);
+  } else {
+    ctx.fillStyle = '#2e8b57';
+    roundRect(W - 120, 16, 100, 36, 8); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('下一关', W - 70, 40);
+  }
+  ctx.textAlign = 'left';
+
+  const iconKey = { dyn: 'shopDyn', str: 'shopStr', clover: 'shopClover', rock: 'shopRock', dia: 'shopDia' };
   shopItems.forEach((it, i) => {
-    const x = 24 + i * 100, y = H - 120;
-    ctx.fillStyle = score >= it.price ? '#5a4020' : '#333';
-    roundRect(x, y, 90, 70, 8); ctx.fill();
-    ctx.strokeStyle = '#f5d76e'; ctx.stroke();
+    const x = 30 + i * 120, y = H - 150;
+    ctx.fillStyle = score >= it.price ? 'rgba(90,60,25,0.85)' : 'rgba(40,40,40,0.75)';
+    roundRect(x, y, 105, 100, 10); ctx.fill();
+    ctx.strokeStyle = shopSel === i ? '#fff36a' : '#f5d76e';
+    ctx.lineWidth = shopSel === i ? 2.5 : 1.2;
+    ctx.stroke();
+    const ik = images[iconKey[it.id]];
+    if (ik) {
+      const iw = 48, ih = iw * ik.height / ik.width;
+      ctx.drawImage(ik, x + (105 - iw) / 2, y + 8, iw, ih);
+    }
     ctx.fillStyle = '#ffe9a0';
     ctx.font = 'bold 13px "Microsoft YaHei",sans-serif';
-    ctx.fillText(it.name, x + 10, y + 28);
-    ctx.fillText('$' + it.price, x + 10, y + 52);
+    ctx.textAlign = 'center';
+    ctx.fillText(it.name, x + 52, y + 72);
+    ctx.fillText('$' + it.price, x + 52, y + 90);
+    ctx.textAlign = 'left';
   });
+}
 
-  ctx.fillStyle = '#2e8b57';
-  roundRect(W - 120, 20, 100, 36, 8); ctx.fill();
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 16px sans-serif';
-  ctx.fillText('下一关', W - 100, 44);
+function wrapText(text, x, y, maxW, lineH) {
+  const chars = text.split('');
+  let line = '';
+  for (const ch of chars) {
+    const test = line + ch;
+    if (ctx.measureText(test).width > maxW) {
+      ctx.fillText(line, x, y);
+      line = ch; y += lineH;
+    } else line = test;
+  }
+  if (line) ctx.fillText(line, x, y);
 }
 
 function drawResult() {
@@ -724,6 +830,7 @@ function drawFloats() {
 
 function render() {
   if (mode === 'title') drawTitle();
+  else if (mode === 'goal') drawGoal();
   else if (mode === 'shop') drawShop();
   else if (mode === 'result') { drawPlayBg(); drawMiner(); drawHUD(); drawResult(); }
   else if (mode === 'win') drawWin();
@@ -752,9 +859,14 @@ function onPointer(e) {
   ensureAudio();
   const p = canvasPos(e);
   if (mode === 'title') {
-    if (p.x > 40 && p.x < 300 && p.y > 40 && p.y < 280) {
+    // gold nugget start region (upper-left)
+    if (p.x > 30 && p.x < 290 && p.y > 20 && p.y < 260) {
       resetRun();
     }
+    return;
+  }
+  if (mode === 'goal') {
+    startLevel();
     return;
   }
   if (mode === 'result') {
@@ -771,8 +883,8 @@ function onPointer(e) {
   if (mode === 'shop') {
     if (p.x > W - 120 && p.y < 60) { nextLevel(); return; }
     shopItems.forEach((it, i) => {
-      const x = 24 + i * 100, y = H - 120;
-      if (p.x > x && p.x < x + 90 && p.y > y && p.y < y + 70) {
+      const x = 30 + i * 120, y = H - 150;
+      if (p.x > x && p.x < x + 105 && p.y > y && p.y < y + 100) {
         shopSel = i;
         if (score >= it.price) {
           score -= it.price;
@@ -785,6 +897,10 @@ function onPointer(e) {
     return;
   }
   if (mode === 'play') {
+    if (p.x > W - 200 && p.x < W - 144 && p.y > 6 && p.y < 38) {
+      mode = 'title';
+      return;
+    }
     if (isTouch && Math.hypot(p.x - dynBtn.x, p.y - dynBtn.y) < dynBtn.r + 8) {
       useDynamite();
       return;
@@ -811,6 +927,7 @@ addEventListener('keydown', (e) => {
     minerPose = 'up';
   }
   if (e.code === 'Enter' && mode === 'title') resetRun();
+  if (e.code === 'Enter' && mode === 'goal') startLevel();
 });
 
 function frame(ts) {
@@ -825,15 +942,22 @@ function frame(ts) {
 
 (async function boot() {
   try {
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const titleList = (dpr >= 1.5) ? TITLE_PACK_2X : TITLE_PACK;
     let done = 0;
-    const total = TITLE_PACK.length + PLAY_PACK.length + SFX_NAMES.length;
-    for (const [k, u] of TITLE_PACK) {
+    const total = titleList.length + PLAY_PACK.length + SFX_NAMES.length;
+    for (const [k, u] of titleList) {
       await loadImage(k, u);
       done++; setLoad(done / total);
     }
     document.getElementById('load').classList.add('hide');
     requestAnimationFrame(frame);
+    // play bg prefer 2x
+    if (dpr >= 1.5) {
+      try { await loadImage('playBg', 'assets/ui/play_bg@2x.webp'); } catch (e) {}
+    }
     for (const [k, u] of PLAY_PACK) {
+      if (k === 'playBg' && images.playBg) { done++; continue; }
       try { await loadImage(k, u); } catch (e) { console.warn(e); }
       done++; setLoad(Math.min(0.95, done / total));
     }
