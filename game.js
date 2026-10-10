@@ -4,7 +4,7 @@
  * Physics/layouts/SFX from original SWF (CWS v6, 550×400 @18fps)
  */
 const W = 550, H = 400, FPS = 18;
-const ASSET_VER = '6';
+const ASSET_VER = '7';
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
@@ -31,8 +31,9 @@ const TITLE_PACK_2X = [
 const PLAY_PACK = [
   ['playBg', 'assets/ui/play_bg.webp'],
   ['goalSplash', 'assets/ui/goal_splash.webp'],
-  ['shopPanel', 'assets/ui/shop_panel.webp'],
-  ['shopkeeper', 'assets/ui/shopkeeper.webp'],
+  ['shopBg', 'assets/ui/shop_bg.webp'],
+  ['shopBgHappy', 'assets/ui/shop_bg_happy.webp'],
+  ['shopBgAngry', 'assets/ui/shop_bg_angry.webp'],
   ['shopDyn', 'assets/shop/dyn.webp'],
   ['shopStr', 'assets/shop/str.webp'],
   ['shopClover', 'assets/shop/clover.webp'],
@@ -64,14 +65,33 @@ const PLAY_PACK = [
 ];
 const PLAY_PACK_2X = [
   ['playBg', 'assets/ui/play_bg@2x.webp'],
+  ['shopBg', 'assets/ui/shop_bg@2x.webp'],
+  ['shopBgHappy', 'assets/ui/shop_bg_happy@2x.webp'],
+  ['shopBgAngry', 'assets/ui/shop_bg_angry@2x.webp'],
+  ['shopNext', 'assets/shop/next@2x.webp'],
+  ['minerIdle', 'assets/miner/idle@2x.webp'],
+  ['minerDown', 'assets/miner/down@2x.webp'],
+  ['minerUp', 'assets/miner/up@2x.webp'],
+  ['minerPull', 'assets/miner/pull@2x.webp'],
+  ['minerThrow1', 'assets/miner/throw1@2x.webp'],
+  ['minerThrow2', 'assets/miner/throw2@2x.webp'],
+  ['minerThrow3', 'assets/miner/throw3@2x.webp'],
 ];
 const SFX_NAMES = ['level','win','money','click','grab','tick','throw','boom','drop','hit','score','pant'];
 
 // SWF claw object frames (DefineSprite_281 frame = object id) + miner pull loop (sprite 238)
-for (let o = 2; o <= 14; o++) PLAY_PACK.push(['hookGrab' + o, 'assets/hook/grab_' + o + '.webp']);
+for (let o = 2; o <= 14; o++) {
+  PLAY_PACK.push(['hookGrab' + o, 'assets/hook/grab_' + o + '.webp']);
+  PLAY_PACK_2X.push(['hookGrab' + o, 'assets/hook/grab_' + o + '@2x.webp']);
+}
 for (let i = 1; i <= 37; i++) {
   const id = String(i).padStart(2, '0');
   PLAY_PACK.push(['minerPull' + i, 'assets/miner/pull_frames/' + id + '.webp']);
+  PLAY_PACK_2X.push(['minerPull' + i, 'assets/miner/pull_frames/' + id + '@2x.webp']);
+}
+for (const k of ['gold_s','gold_m','gold_l','gold_xl','rock_m','rock_l','diamond_s','diamond_m','bag','bone','pig','skull','tnt','shopDyn','shopStr','shopClover','shopRock','shopDia','hookOpen','hookClosed','goalSplash']) {
+  const base = PLAY_PACK.find(p => p[0] === k);
+  if (base) PLAY_PACK_2X.push([k, base[1].replace('.webp', '@2x.webp')]);
 }
 
 
@@ -83,23 +103,28 @@ function loadImage(key, url) {
     im.src = url + (url.includes('?') ? '&' : '?') + 'v=' + ASSET_VER;
   });
 }
-async function loadPack(pack, pack2x) {
+async function loadPack(pack, pack2x, onProgress) {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const use2x = dpr >= 1.5 && pack2x;
-  const list = use2x ? pack.map(([k, u]) => {
-    const alt = pack2x.find(p => p[0] === k);
-    return alt || [k, u];
-  }) : pack;
-  // merge: for keys in pack2x use 2x, else 1x from pack
-  const merged = [];
-  const seen = new Set();
+  const byKey = new Map(pack);
   if (use2x) {
-    for (const [k, u] of pack2x) { merged.push([k, u]); seen.add(k); }
+    for (const [k, u] of pack2x) byKey.set(k, u);
   }
-  for (const [k, u] of pack) {
-    if (!seen.has(k)) merged.push([k, u]);
+  const merged = [...byKey.entries()];
+  let i = 0;
+  for (const [k, u] of merged) {
+    try {
+      await loadImage(k, u);
+    } catch (e) {
+      // fall back to 1x if @2x missing
+      const one = pack.find(p => p[0] === k);
+      if (one && one[1] !== u) {
+        try { await loadImage(k, one[1]); } catch (e2) { console.warn(e2); }
+      } else console.warn(e);
+    }
+    i++;
+    if (onProgress) onProgress(i / merged.length);
   }
-  for (const [k, u] of merged) await loadImage(k, u);
 }
 
 let audioCtx = null;
@@ -138,6 +163,8 @@ function setLoad(p) {
 // ----- SWF constants -----
 const PIVOT = { x: 275.5, y: 48.6 };
 const MINER_POS = { x: 285.85, y: 34.75, scale: 0.389 };
+const MINER_NATIVE = { w: 139, h: 144 }; // DefineSprite_238 export size (all poses)
+const MINER_DRAW_SCALE = 0.42; // ~SWF 0.389, slight bump for readability
 const DROP_PX_PER_FRAME = 9.86;       // timeline Y step
 const PULL_PX_PER_FRAME = 1.385;      // claw Y step on pull timeline
 const BASE_STRENGTH = 10;
@@ -207,11 +234,16 @@ let claw = {
 let floatTexts = [];
 let shopItems = [];
 let shopSel = -1;
+let shopBought = 0;
+let shopFace = 'idle'; // idle | happy | angry
+let shopExitTimer = 0;
 let resultOk = false;
 let lastTs = 0;
 let logicAcc = 0;
 let isTouch = matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window;
-let dynBtn = { x: W - 64, y: H - 64, r: 40 };
+// Phone-only virtual buttons (bottom-right): drop claw + dynamite
+let dropBtn = { x: W - 52, y: H - 118, r: 34 };
+let dynBtn = { x: W - 52, y: H - 46, r: 34 };
 let hintAlpha = 1;
 let minerPose = 'idle'; // idle | down | up | pull | throw
 let throwTimer = 0;
@@ -409,6 +441,9 @@ function endLevel() {
 
 function buildShop() {
   shopItems = [];
+  shopBought = 0;
+  shopFace = 'idle';
+  shopExitTimer = 0;
   if (stick < 5) {
     const price = (Math.random() * 300 | 0) + 1 + level * 2;
     shopItems.push({ id: 'dyn', name: '炸药', desc: '抓到重物时可按↑炸掉，节省时间。', price, buy() { stick++; } });
@@ -433,6 +468,14 @@ function buildShop() {
   shopItems = shopItems.slice(0, 4);
   shopSel = -1;
   mode = 'shop';
+}
+
+function leaveShop() {
+  if (shopExitTimer > 0) return;
+  // SWF DefineButton2_78: bought==0 → angry (frame 26), else happy (frame 19)
+  shopFace = shopBought ? 'happy' : 'angry';
+  shopExitTimer = 0.85;
+  playSfx(shopBought ? 'money' : 'tick', 0.4);
 }
 
 function nextLevel() {
@@ -534,6 +577,13 @@ function logicStep() {
 }
 
 function update(dt) {
+  if (mode === 'shop' && shopExitTimer > 0) {
+    shopExitTimer -= dt;
+    if (shopExitTimer <= 0) {
+      shopExitTimer = 0;
+      nextLevel();
+    }
+  }
   logicAcc += dt;
   const step = 1 / FPS;
   let guard = 0;
@@ -630,10 +680,12 @@ function drawMiner() {
     im = images['minerPull' + frame] || images.minerPull || images.minerUp || im;
   }
   if (!im) return;
-  // SWF: miner scale 0.389 of ~166×150 → ~65×58; slightly larger for readability
-  const mw = 72;
-  const mh = mw * im.height / im.width;
-  ctx.drawImage(im, MINER_POS.x - mw / 2, 4, mw, mh);
+  // All DefineSprite_238 frames are 139×144 — fixed stage size prevents flicker
+  const mw = MINER_NATIVE.w * MINER_DRAW_SCALE;
+  const mh = MINER_NATIVE.h * MINER_DRAW_SCALE;
+  const x = MINER_POS.x - mw / 2;
+  const y = Math.max(2, MINER_POS.y - mh * 0.42);
+  ctx.drawImage(im, x, y, mw, mh);
 }
 
 function drawClaw() {
@@ -763,12 +815,19 @@ function drawGoal() {
 function drawShop() {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
-  if (images.shopPanel) ctx.drawImage(images.shopPanel, 0, H - 347, 550, 347);
-  else if (images.shopkeeper) ctx.drawImage(images.shopkeeper, 0, 40, W, H - 40);
+  // Face: idle shopkeeper; after buy → happy; leaving without buy → angry (SWF frames 19/26)
+  let bg = images.shopBg;
+  if (shopFace === 'happy') bg = images.shopBgHappy || bg;
+  else if (shopFace === 'angry') bg = images.shopBgAngry || bg;
+  if (bg) {
+    // panels are ~550×347 — pin to bottom like original
+    const bh = Math.min(H, bg.height * (W / bg.width));
+    ctx.drawImage(bg, 0, H - bh, W, bh);
+  }
 
-  // instruction banner
+  // money / tip banner (left) — one clear continue button on the right
   ctx.fillStyle = 'rgba(0,0,0,0.72)';
-  roundRect(16, 10, W - 140, 70, 8); ctx.fill();
+  roundRect(16, 10, W - 160, 70, 8); ctx.fill();
   ctx.strokeStyle = '#e0b84a'; ctx.lineWidth = 1.5; ctx.stroke();
   ctx.fillStyle = '#ffe9a0';
   ctx.font = 'bold 15px "Microsoft YaHei",sans-serif';
@@ -777,25 +836,28 @@ function drawShop() {
   ctx.font = '12px "Microsoft YaHei",sans-serif';
   ctx.fillStyle = '#ddd';
   const sel = shopItems[shopSel];
-  const tip = sel ? (sel.name + ' $' + sel.price + ' — ' + sel.desc) : '点击下面的物品即可买卖，买好后点下一关';
-  wrapText(tip, 28, 54, W - 180, 16);
+  let tip = '点击下面的物品即可买卖，买好后点下一关';
+  if (shopFace === 'happy' && shopExitTimer > 0) tip = '谢谢惠顾！下一关见～';
+  else if (shopFace === 'angry' && shopExitTimer > 0) tip = '……一件都不买就走？哼。';
+  else if (sel) tip = sel.name + ' $' + sel.price + ' — ' + sel.desc;
+  wrapText(tip, 28, 54, W - 200, 16);
 
-  // next button
+  // Single next-level button (SWF DefineButton2_78)
+  const nb = { x: W - 140, y: 14, w: 124, h: 42 };
   if (images.shopNext) {
-    ctx.drawImage(images.shopNext, W - 132, 14, 112, 40);
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 16px "Microsoft YaHei",sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('下一关', W - 76, 40);
+    ctx.drawImage(images.shopNext, nb.x, nb.y, nb.w, nb.h);
   } else {
-    ctx.fillStyle = '#2e8b57';
-    roundRect(W - 120, 16, 100, 36, 8); ctx.fill();
+    ctx.fillStyle = '#1a6b2a';
+    roundRect(nb.x, nb.y, nb.w, nb.h, 6); ctx.fill();
+    ctx.strokeStyle = '#3dff6a'; ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = '#fff';
-    ctx.font = 'bold 16px sans-serif';
+    ctx.font = 'bold 18px "Microsoft YaHei",sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('下一关', W - 70, 40);
+    ctx.fillText('下一关', nb.x + nb.w / 2, nb.y + 28);
   }
   ctx.textAlign = 'left';
+
+  if (shopExitTimer > 0) return; // freeze item shelf while face plays
 
   const iconKey = { dyn: 'shopDyn', str: 'shopStr', clover: 'shopClover', rock: 'shopRock', dia: 'shopDia' };
   shopItems.forEach((it, i) => {
@@ -869,25 +931,32 @@ function drawWin() {
 
 function drawTouchControls() {
   if (!isTouch || mode !== 'play') return;
-  ctx.beginPath();
-  ctx.arc(dynBtn.x, dynBtn.y, dynBtn.r, 0, Math.PI * 2);
-  ctx.fillStyle = stick > 0 ? 'rgba(220,80,40,0.5)' : 'rgba(80,80,80,0.35)';
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 13px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('炸药', dynBtn.x, dynBtn.y - 4);
-  ctx.fillText(String(stick), dynBtn.x, dynBtn.y + 14);
-  ctx.textAlign = 'left';
+  function pad(btn, label, active, sub) {
+    ctx.beginPath();
+    ctx.arc(btn.x, btn.y, btn.r, 0, Math.PI * 2);
+    ctx.fillStyle = active ? 'rgba(220,80,40,0.55)' : 'rgba(20,20,20,0.45)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 13px "Microsoft YaHei",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, btn.x, btn.y + (sub ? -4 : 5));
+    if (sub != null) {
+      ctx.font = '12px sans-serif';
+      ctx.fillText(String(sub), btn.x, btn.y + 14);
+    }
+    ctx.textAlign = 'left';
+  }
+  pad(dropBtn, '放钩', claw.state === 'swing', null);
+  pad(dynBtn, '炸药', stick > 0, stick);
   if (hintAlpha > 0 && claw.state === 'swing') {
     ctx.globalAlpha = Math.min(1, hintAlpha);
     ctx.fillStyle = '#fff';
     ctx.font = '14px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('点屏幕放钩子', W / 2, H - 24);
+    ctx.fillText('点「放钩」或屏幕放钩子', W / 2, H - 24);
     ctx.textAlign = 'left';
     ctx.globalAlpha = 1;
   }
@@ -962,7 +1031,8 @@ function onPointer(e) {
     return;
   }
   if (mode === 'shop') {
-    if (p.x > W - 120 && p.y < 60) { nextLevel(); return; }
+    if (shopExitTimer > 0) return;
+    if (p.x > W - 148 && p.y < 64) { leaveShop(); return; }
     shopItems.forEach((it, i) => {
       const x = 30 + i * 120, y = H - 150;
       if (p.x > x && p.x < x + 105 && p.y > y && p.y < y + 100) {
@@ -970,6 +1040,8 @@ function onPointer(e) {
         if (score >= it.price) {
           score -= it.price;
           it.buy();
+          shopBought = 1;
+          shopFace = 'happy';
           shopItems.splice(i, 1);
           playSfx('money');
         }
@@ -982,9 +1054,15 @@ function onPointer(e) {
       mode = 'title';
       return;
     }
-    if (isTouch && Math.hypot(p.x - dynBtn.x, p.y - dynBtn.y) < dynBtn.r + 8) {
-      useDynamite();
-      return;
+    if (isTouch) {
+      if (Math.hypot(p.x - dynBtn.x, p.y - dynBtn.y) < dynBtn.r + 10) {
+        useDynamite();
+        return;
+      }
+      if (Math.hypot(p.x - dropBtn.x, p.y - dropBtn.y) < dropBtn.r + 10) {
+        dropClaw();
+        return;
+      }
     }
     dropClaw();
   }
@@ -1009,6 +1087,7 @@ addEventListener('keydown', (e) => {
   }
   if (e.code === 'Enter' && mode === 'title') resetRun();
   if (e.code === 'Enter' && mode === 'goal') startLevel();
+  if (e.code === 'Enter' && mode === 'shop') leaveShop();
 });
 
 function frame(ts) {
@@ -1024,24 +1103,35 @@ function frame(ts) {
 (async function boot() {
   try {
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
-    const titleList = (dpr >= 1.5) ? TITLE_PACK_2X : TITLE_PACK;
-    let done = 0;
-    const total = titleList.length + PLAY_PACK.length + SFX_NAMES.length;
+    const use2x = dpr >= 1.5;
+    // Phase 1: title only → playable shell
+    const titleList = use2x ? TITLE_PACK_2X : TITLE_PACK;
     for (const [k, u] of titleList) {
-      await loadImage(k, u);
-      done++; setLoad(done / total);
+      try { await loadImage(k, u); } catch (e) {
+        if (use2x) await loadImage(k, TITLE_PACK[0][1]);
+      }
     }
+    setLoad(0.12);
     document.getElementById('load').classList.add('hide');
     requestAnimationFrame(frame);
-    // play bg prefer 2x
-    if (dpr >= 1.5) {
-      try { await loadImage('playBg', 'assets/ui/play_bg@2x.webp'); } catch (e) {}
-    }
-    for (const [k, u] of PLAY_PACK) {
-      if (k === 'playBg' && images.playBg) { done++; continue; }
-      try { await loadImage(k, u); } catch (e) { console.warn(e); }
-      done++; setLoad(Math.min(0.95, done / total));
-    }
+
+    // Phase 2: critical play (bg + miner idle + hook + shop)
+    const critical = new Set(['playBg','goalSplash','shopBg','shopBgHappy','shopBgAngry','shopNext',
+      'minerIdle','minerDown','minerPull','minerUp','minerThrow1','minerThrow2','minerThrow3',
+      'hookOpen','hookClosed']);
+    const phase2 = PLAY_PACK.filter(([k]) => critical.has(k) || k.startsWith('hookGrab') || k.startsWith('gold_') || k.startsWith('rock_') || k.startsWith('diamond_') || ['bag','bone','pig','skull','tnt'].includes(k) || k.startsWith('shop'));
+    const phase3 = PLAY_PACK.filter(([k]) => !phase2.find(p => p[0] === k));
+
+    let done = 0;
+    const total = phase2.length + phase3.length + SFX_NAMES.length;
+    await loadPack(phase2, use2x ? PLAY_PACK_2X : null, (p) => {
+      done = Math.floor(p * phase2.length);
+      setLoad(0.12 + 0.55 * (done / Math.max(1, phase2.length)));
+    });
+    // Phase 3: pull animation frames + remaining
+    await loadPack(phase3, use2x ? PLAY_PACK_2X : null, (p) => {
+      setLoad(0.67 + 0.2 * p);
+    });
     ensureAudio();
     await Promise.all(SFX_NAMES.map(loadSfx));
     setLoad(1);
