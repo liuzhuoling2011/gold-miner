@@ -4,7 +4,7 @@
  * Physics/layouts/SFX from original SWF (CWS v6, 550×400 @18fps)
  */
 const W = 550, H = 400, FPS = 18;
-const ASSET_VER = '7';
+const ASSET_VER = '8';
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
@@ -129,28 +129,115 @@ async function loadPack(pack, pack2x, onProgress) {
 
 let audioCtx = null;
 const audioBuffers = {};
+const sfxLastAt = Object.create(null);   // debounce clock (AudioContext time)
+const sfxActive = Object.create(null);   // exclusive one-shots we may stop
+const SFX_DEBOUNCE = {
+  pant: 0.68, drop: 0.55, hit: 0.14, grab: 0.14, money: 0.18,
+  score: 0.14, click: 0.08, throw: 0.12, boom: 0.12, tick: 0.25,
+  win: 0.6, level: 0.6,
+};
+const SFX_EXCLUSIVE = new Set(['pant', 'drop']);
+
 function ensureAudio() {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  if (!audioCtx) audioCtx = new AC();
   if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
 }
-async function loadSfx(name) {
+
+/** Unlock autoplay policy on first user gesture (no setTimeout). */
+function unlockAudio() {
+  const ctx = ensureAudio();
+  if (!ctx) return;
   try {
-    ensureAudio();
-    const r = await fetch('assets/sfx/' + name + '.mp3?v=' + ASSET_VER);
-    audioBuffers[name] = await audioCtx.decodeAudioData(await r.arrayBuffer());
+    const silent = ctx.createBuffer(1, 1, 22050);
+    const src = ctx.createBufferSource();
+    src.buffer = silent;
+    src.connect(ctx.destination);
+    src.start(0);
   } catch (e) {}
 }
+
+/** Trim leading/trailing near-silence so one-shots fire immediately. */
+function trimSilence(buf, thresh = 0.018) {
+  if (!buf || !audioCtx) return buf;
+  const nch = buf.numberOfChannels;
+  const len = buf.length;
+  const sr = buf.sampleRate;
+  let start = 0;
+  let end = len - 1;
+  outerStart: for (let i = 0; i < len; i++) {
+    for (let c = 0; c < nch; c++) {
+      if (Math.abs(buf.getChannelData(c)[i]) > thresh) { start = i; break outerStart; }
+    }
+  }
+  outerEnd: for (let i = len - 1; i >= start; i--) {
+    for (let c = 0; c < nch; c++) {
+      if (Math.abs(buf.getChannelData(c)[i]) > thresh) { end = i; break outerEnd; }
+    }
+  }
+  const pad = Math.max(1, (sr * 0.004) | 0);
+  start = Math.max(0, start - pad);
+  end = Math.min(len - 1, end + pad);
+  const outLen = Math.max(1, end - start + 1);
+  if (outLen >= len - 8) return buf; // already tight
+  const out = audioCtx.createBuffer(nch, outLen, sr);
+  for (let c = 0; c < nch; c++) {
+    out.getChannelData(c).set(buf.getChannelData(c).subarray(start, end + 1));
+  }
+  return out;
+}
+
+async function loadSfx(name) {
+  try {
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    const r = await fetch('assets/sfx/' + name + '.mp3?v=' + ASSET_VER);
+    const raw = await ctx.decodeAudioData(await r.arrayBuffer());
+    audioBuffers[name] = trimSilence(raw);
+  } catch (e) {}
+}
+
+function stopSfx(name) {
+  const slot = sfxActive[name];
+  if (!slot || !audioCtx) return;
+  try {
+    const t = audioCtx.currentTime;
+    slot.gain.gain.cancelScheduledValues(t);
+    slot.gain.gain.setValueAtTime(0, t);
+    slot.src.stop(t);
+  } catch (e) {}
+  if (sfxActive[name] === slot) delete sfxActive[name];
+}
+
+function stopPant() {
+  stopSfx('pant');
+  pantCool = 0;
+}
+
+/** Web Audio one-shot: pre-decoded, silence-trimmed, debounced, optional exclusive. */
 function playSfx(name, vol = 0.55) {
   try {
-    ensureAudio();
+    const ctx = ensureAudio();
     const buf = audioBuffers[name];
-    if (!buf) return;
-    const src = audioCtx.createBufferSource();
+    if (!ctx || !buf) return;
+    const now = ctx.currentTime;
+    const gap = SFX_DEBOUNCE[name] != null ? SFX_DEBOUNCE[name] : 0.05;
+    if (sfxLastAt[name] != null && now - sfxLastAt[name] < gap) return;
+    if (SFX_EXCLUSIVE.has(name)) stopSfx(name);
+    const src = ctx.createBufferSource();
     src.buffer = buf;
-    const g = audioCtx.createGain();
+    const g = ctx.createGain();
     g.gain.value = vol;
-    src.connect(g); g.connect(audioCtx.destination);
+    src.connect(g);
+    g.connect(ctx.destination);
+    src.onended = () => {
+      if (sfxActive[name] && sfxActive[name].src === src) delete sfxActive[name];
+    };
     src.start(0);
+    sfxLastAt[name] = now;
+    if (SFX_EXCLUSIVE.has(name)) sfxActive[name] = { src, gain: g };
   } catch (e) {}
 }
 function setLoad(p) {
@@ -248,7 +335,6 @@ let hintAlpha = 1;
 let minerPose = 'idle'; // idle | down | up | pull | throw
 let throwTimer = 0;
 let boomFx = null; // {x,y,life}
-let dropSfxCool = 0;
 let goalTimer = 0;
 let minerAnim = 1;      // sprite 238 frame 1..37
 let pantCool = 0;
@@ -322,7 +408,7 @@ function startLevel() {
   throwTimer = 0;
   hintAlpha = 1;
   minerAnim = 1;
-  pantCool = 0;
+  stopPant();
   items = [];
   const layout = pickLevelLayout(level);
   if (layout) {
@@ -364,8 +450,7 @@ function dropClaw() {
   claw.state = 'drop';
   claw.busy = 0;
   minerPose = 'down';
-  playSfx('drop', 0.4);
-  dropSfxCool = 0.12;
+  playSfx('drop', 0.45); // one-shot; no mid-drop retrigger (was stacking)
   hintAlpha = 0;
 }
 
@@ -373,6 +458,7 @@ function useDynamite() {
   if (mode !== 'play' || stick < 1) return;
   if (claw.state !== 'pull' || !claw.caught) return;
   stick--;
+  stopPant();
   const tip = clawTip();
   boomFx = { x: tip.x, y: tip.y, life: 0.45 };
   claw.caught.alive = false;
@@ -398,12 +484,13 @@ function grabItem(it) {
   minerPose = 'pull';
   minerAnim = 1;
   throwTimer = 0; // never inherit throw pose from a prior dynamite toss
-  pantCool = 0;
+  stopPant();
   playSfx('hit', 0.5);
   playSfx('grab', 0.35);
 }
 
 function finishPull() {
+  stopPant();
   const price = claw.price;
   claw.state = 'swing';
   claw.len = LEN_MIN;
@@ -501,7 +588,6 @@ function logicStep() {
     if (throwTimer <= 0 && claw.state === 'pull') minerPose = 'up';
   }
   if (boomFx) { boomFx.life -= dt; if (boomFx.life <= 0) boomFx = null; }
-  if (dropSfxCool > 0) dropSfxCool -= dt;
 
   // timer ~1s per SWF sprite 188 tick
   timeLeft -= dt;
@@ -517,7 +603,6 @@ function logicStep() {
   } else if (claw.state === 'drop') {
     claw.len += DROP_PX_PER_FRAME;
     const tip = clawTip();
-    if (dropSfxCool <= 0) { playSfx('drop', 0.15); dropSfxCool = 0.2; }
     if (tip.y > H - 6 || tip.x < 6 || tip.x > W - 6 || claw.len >= LEN_MAX) {
       claw.state = 'pull';
       claw.caught = null;
@@ -560,16 +645,16 @@ function logicStep() {
     if (heavy) {
       pantCool -= dt;
       if (pantCool <= 0) {
-        playSfx('pant', 0.42);
-        pantCool = 0.70;
+        playSfx('pant', 0.42); // exclusive + debounced; restarts cleanly
+        const pd = audioBuffers.pant ? audioBuffers.pant.duration : 0.71;
+        pantCool = pd + 0.04; // no overlap with previous pant
       }
     } else {
-      pantCool = 0;
+      stopPant();
     }
     if (claw.len <= LEN_MIN) {
       claw.len = LEN_MIN;
-      pantCool = 0;
-      finishPull();
+      finishPull(); // stopPant inside
       if (timeLeft <= 0) endLevel();
     }
   }
@@ -1006,7 +1091,7 @@ function canvasPos(e) {
 }
 
 function onPointer(e) {
-  ensureAudio();
+  unlockAudio();
   const p = canvasPos(e);
   if (mode === 'title') {
     // gold nugget start region (upper-left)
@@ -1070,9 +1155,13 @@ function onPointer(e) {
 
 canvas.addEventListener('mousedown', onPointer);
 canvas.addEventListener('touchstart', (e) => { e.preventDefault(); onPointer(e); }, { passive: false });
+// Extra unlock path for browsers that suspend AudioContext until gesture
+['pointerdown', 'touchstart', 'keydown'].forEach((ev) => {
+  addEventListener(ev, unlockAudio, { once: true, passive: true });
+});
 
 addEventListener('keydown', (e) => {
-  ensureAudio();
+  unlockAudio();
   if (e.code === 'ArrowDown' || e.code === 'Space') { e.preventDefault(); dropClaw(); }
   if (e.code === 'ArrowUp' || e.code === 'KeyD') { e.preventDefault(); useDynamite(); }
   // ←/→ force pull-up like SWF
