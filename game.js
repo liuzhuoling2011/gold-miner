@@ -4,7 +4,7 @@
  * Physics/layouts/SFX from original SWF (CWS v6, 550×400 @18fps)
  */
 const W = 550, H = 400, FPS = 18;
-const ASSET_VER = '5';
+const ASSET_VER = '6';
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
@@ -143,6 +143,7 @@ const PULL_PX_PER_FRAME = 1.385;      // claw Y step on pull timeline
 const BASE_STRENGTH = 10;
 const LEN_MIN = 12.45;
 const LEN_MAX = 407;
+const PULL_FRAME_MAX = 20; // DefineSprite_238 pull loop before throw label
 // SWF hitTest: tip PlaceObject(256)=shape40 12.4×12.4 vs item.ob.box (shape40 × scales below)
 const TIP_HALF = 6.2;
 const HOOK_OPEN_NATIVE = { w: 28, h: 18 }; // cropped DefineSprite_281/1
@@ -317,9 +318,11 @@ function startLevel() {
 }
 
 function clawTip() {
+  // Flash _rotation: +deg = clockwise. With Y-down, local +Y maps to (-sin, +cos).
+  // Tip must use the same mapping so the rope ends where the claw hinge faces.
   const rad = claw.angleDeg * Math.PI / 180;
   return {
-    x: PIVOT.x + Math.sin(rad) * claw.len,
+    x: PIVOT.x - Math.sin(rad) * claw.len,
     y: PIVOT.y + Math.cos(rad) * claw.len,
   };
 }
@@ -362,6 +365,7 @@ function grabItem(it) {
   it.alive = false;
   minerPose = 'pull';
   minerAnim = 1;
+  throwTimer = 0; // never inherit throw pose from a prior dynamite toss
   pantCool = 0;
   playSfx('hit', 0.5);
   playSfx('grab', 0.35);
@@ -502,10 +506,11 @@ function logicStep() {
       claw.caught.x = tip.x;
       claw.caught.y = tip.y + Math.max(6, claw.caught.r * 0.25);
     }
-    // SWF miner.gotoAndStop("up") → nested sprite 238 loops at 18fps
+    // SWF miner.gotoAndStop("up") → sprite 238 frames 1–20 loop (frame_20 → 1).
+    // Frames 31–33 are the "throw" label (dynamite); never play them while pulling.
     if (minerPose !== 'throw') {
       minerPose = 'pull';
-      minerAnim = (minerAnim % 37) + 1;
+      minerAnim = (minerAnim % PULL_FRAME_MAX) + 1;
     }
     // Heavy pull (weight>1 and not fast path): pant like original effort
     const heavy = claw.caught && !claw.stickBonus && !strengthFlag && (claw.weight || 0) > 1;
@@ -616,12 +621,13 @@ function drawHUD() {
 function drawMiner() {
   let im = images.minerIdle;
   if (minerPose === 'down') im = images.minerDown || im;
-  else if (minerPose === 'throw') {
+  else if (minerPose === 'throw' && throwTimer > 0) {
     const t = throwTimer;
     const key = t > 0.3 ? 'minerThrow1' : t > 0.15 ? 'minerThrow2' : 'minerThrow3';
-    im = images[key] || im;
-  } else if (minerPose === 'pull' || minerPose === 'up') {
-    im = images['minerPull' + minerAnim] || images.minerPull || images.minerUp || im;
+    im = images[key] || images.minerPull || im;
+  } else if (minerPose === 'pull' || minerPose === 'up' || minerPose === 'throw') {
+    const frame = ((minerAnim - 1) % PULL_FRAME_MAX) + 1;
+    im = images['minerPull' + frame] || images.minerPull || images.minerUp || im;
   }
   if (!im) return;
   // SWF: miner scale 0.389 of ~166×150 → ~65×58; slightly larger for readability
@@ -668,6 +674,7 @@ function drawClaw() {
 
   ctx.save();
   ctx.translate(tip.x, tip.y);
+  // Same clockwise angle as Flash _rotation / clawTip()
   ctx.rotate(claw.angleDeg * Math.PI / 180);
   if (hk) {
     // hinge at top-center (rope end); native SWF pixel size
