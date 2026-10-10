@@ -4,7 +4,7 @@
  * Physics/layouts/SFX from original SWF (CWS v6, 550×400 @18fps)
  */
 const W = 550, H = 400, FPS = 18;
-const ASSET_VER = '9';
+const ASSET_VER = '10';
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
@@ -62,6 +62,8 @@ const PLAY_PACK = [
   ['pig', 'assets/items/pig.webp'],
   ['skull', 'assets/items/skull.webp'],
   ['tnt', 'assets/items/tnt.webp'],
+  ['dynStick', 'assets/fx/dyn_stick.webp'],
+  ['dynBoom', 'assets/fx/dyn_boom.webp'],
 ];
 const PLAY_PACK_2X = [
   ['playBg', 'assets/ui/play_bg@2x.webp'],
@@ -89,7 +91,7 @@ for (let i = 1; i <= 37; i++) {
   PLAY_PACK.push(['minerPull' + i, 'assets/miner/pull_frames/' + id + '.webp']);
   PLAY_PACK_2X.push(['minerPull' + i, 'assets/miner/pull_frames/' + id + '@2x.webp']);
 }
-for (const k of ['gold_s','gold_m','gold_l','gold_xl','rock_m','rock_l','diamond_s','diamond_m','bag','bone','pig','skull','tnt','shopDyn','shopStr','shopClover','shopRock','shopDia','hookOpen','hookClosed','goalSplash']) {
+for (const k of ['gold_s','gold_m','gold_l','gold_xl','rock_m','rock_l','diamond_s','diamond_m','bag','bone','pig','skull','tnt','shopDyn','shopStr','shopClover','shopRock','shopDia','hookOpen','hookClosed','goalSplash','dynStick','dynBoom']) {
   const base = PLAY_PACK.find(p => p[0] === k);
   if (base) PLAY_PACK_2X.push([k, base[1].replace('.webp', '@2x.webp')]);
 }
@@ -347,6 +349,8 @@ let hintAlpha = 1;
 let minerPose = 'idle'; // idle | down | up | pull | throw
 let throwTimer = 0;
 let boomFx = null; // {x,y,life}
+// SWF dynamite: sprite 238 frames 31–33 throw, frame 34 starts stick flight (DefineSprite_255/250), boom on claw hit
+let dynToss = null; // {phase:'throw'|'fly', frame, x, y}
 let goalTimer = 0;
 let minerAnim = 1;      // sprite 238 frame 1..37
 let pantCool = 0;
@@ -416,6 +420,7 @@ function startLevel() {
   claw.angleDeg = SWING[claw.swingFrame % SWING.length] || 0;
   floatTexts = [];
   boomFx = null;
+  dynToss = null;
   minerPose = 'idle';
   throwTimer = 0;
   hintAlpha = 1;
@@ -469,19 +474,82 @@ function dropClaw() {
 function useDynamite() {
   if (mode !== 'play' || stick < 1) return;
   if (claw.state !== 'pull' || !claw.caught) return;
+  if (dynToss) return; // one toss at a time
   stick--;
   stopPant();
+  // SWF: miner.m.gotoAndPlay("throw") → frames 31–33; boom waits until stick hits claw
+  minerPose = 'throw';
+  minerAnim = 31;
+  throwTimer = 3 / FPS; // visual fallback for throw1/2/3 (~frames 31–33 @18fps)
+  dynToss = {
+    phase: 'throw', // then 'fly' after frame 34 trigger
+    frame: 31,      // DefineSprite_238
+    x: PIVOT.x,
+    y: PIVOT.y + 8,
+  };
+  playSfx('throw', 0.5);
+  // boom / destroy deferred to detonateDynamite() when stick reaches claw
+}
+
+function detonateDynamite() {
   const tip = clawTip();
   boomFx = { x: tip.x, y: tip.y, life: 0.45 };
-  claw.caught.alive = false;
-  claw.caught = null;
+  if (claw.caught) {
+    claw.caught.alive = false;
+    claw.caught = null;
+  }
   claw.price = 0;
   claw.weight = 0;
   claw.stickBonus = 1;
-  minerPose = 'throw';
-  throwTimer = 0.45;
-  playSfx('throw', 0.5);
+  dynToss = null;
+  throwTimer = 0;
+  if (claw.state === 'pull') {
+    minerPose = 'up';
+    minerAnim = 1;
+  }
   playSfx('boom', 0.7);
+  // If rope already reeled in during flight, finish empty pull now
+  if (claw.state === 'pull' && claw.len <= LEN_MIN) {
+    finishPull();
+    if (timeLeft <= 0) endLevel();
+  }
+}
+
+function advanceDynamiteToss() {
+  if (!dynToss) return;
+  const tip = clawTip();
+  if (dynToss.phase === 'throw') {
+    // Sprite 238: 31,32,33 = throw poses; 34 starts stick flight; 35 → pull loop
+    dynToss.frame++;
+    minerAnim = dynToss.frame;
+    if (dynToss.frame === 34) {
+      dynToss.phase = 'fly';
+      dynToss.x = PIVOT.x;
+      dynToss.y = PIVOT.y + 10;
+      // SWF frame_34: _root.C.cl.d.gotoAndStop(2)
+    } else if (dynToss.frame >= 35) {
+      // SWF frame_35: gotoAndPlay(1) — back to pull while stick still flies
+      minerPose = 'pull';
+      minerAnim = 1;
+      throwTimer = 0;
+    }
+    return;
+  }
+  // During fly, miner already on pull loop (after frame 35)
+  if (minerPose === 'throw') {
+    minerPose = 'pull';
+    minerAnim = 1;
+    throwTimer = 0;
+  }
+  // DefineSprite_255/250: lerp 50% toward claw each enterFrame, boom on hitTest
+  dynToss.x += (tip.x - dynToss.x) * 0.5;
+  dynToss.y += (tip.y - dynToss.y) * 0.5;
+  const dx = dynToss.x - tip.x;
+  const dy = dynToss.y - tip.y;
+  // hit when near tip (SWF hitTest claw.box ≈ tip AABB)
+  if (dx * dx + dy * dy <= (TIP_HALF * 2.5) * (TIP_HALF * 2.5)) {
+    detonateDynamite();
+  }
 }
 
 function grabItem(it) {
@@ -496,6 +564,7 @@ function grabItem(it) {
   minerPose = 'pull';
   minerAnim = 1;
   throwTimer = 0; // never inherit throw pose from a prior dynamite toss
+  dynToss = null;
   stopPant();
   playSfx('hit', 0.5);
   playSfx('grab', 0.35);
@@ -597,9 +666,11 @@ function logicStep() {
 
   if (throwTimer > 0) {
     throwTimer -= dt;
-    if (throwTimer <= 0 && claw.state === 'pull') minerPose = 'up';
+    // do not force pose here while dynToss owns throw→fly timing
+    if (throwTimer <= 0 && !dynToss && claw.state === 'pull' && minerPose === 'throw') minerPose = 'up';
   }
   if (boomFx) { boomFx.life -= dt; if (boomFx.life <= 0) boomFx = null; }
+  advanceDynamiteToss();
 
   // timer ~1s per SWF sprite 188 tick
   timeLeft -= dt;
@@ -666,8 +737,13 @@ function logicStep() {
     }
     if (claw.len <= LEN_MIN) {
       claw.len = LEN_MIN;
-      finishPull(); // stopPant inside
-      if (timeLeft <= 0) endLevel();
+      // Wait for in-flight dynamite so item does not score before boom
+      if (dynToss && claw.caught) {
+        /* hold at top until detonateDynamite */
+      } else {
+        finishPull(); // stopPant inside
+        if (timeLeft <= 0) endLevel();
+      }
     }
   }
   hintAlpha = Math.max(0, hintAlpha - dt * 0.25);
@@ -768,11 +844,12 @@ function drawHUD() {
 function drawMiner() {
   let im = images.minerIdle;
   if (minerPose === 'down') im = images.minerDown || im;
-  else if (minerPose === 'throw' && throwTimer > 0) {
-    const t = throwTimer;
-    const key = t > 0.3 ? 'minerThrow1' : t > 0.15 ? 'minerThrow2' : 'minerThrow3';
+  else if (minerPose === 'throw' || (dynToss && dynToss.phase === 'throw')) {
+    // Sprite 238 frames 31–33 → throw1/2/3
+    const f = (dynToss && dynToss.frame) || 31;
+    const key = f <= 31 ? 'minerThrow1' : f === 32 ? 'minerThrow2' : 'minerThrow3';
     im = images[key] || images.minerPull || im;
-  } else if (minerPose === 'pull' || minerPose === 'up' || minerPose === 'throw') {
+  } else if (minerPose === 'pull' || minerPose === 'up') {
     const frame = ((minerAnim - 1) % PULL_FRAME_MAX) + 1;
     im = images['minerPull' + frame] || images.minerPull || images.minerUp || im;
   }
@@ -860,18 +937,47 @@ function drawClaw() {
     }
   }
 
+  // Flying dynamite stick along rope (SWF DefineSprite_250 after frame 34)
+  if (dynToss && dynToss.phase === 'fly') {
+    const tip2 = tip;
+    const ang = Math.atan2(tip2.y - dynToss.y, tip2.x - dynToss.x);
+    const stickIm = images.dynStick || images.shopDyn;
+    ctx.save();
+    ctx.translate(dynToss.x, dynToss.y);
+    ctx.rotate(ang + Math.PI / 2);
+    if (stickIm) {
+      const sw = stickIm === images.dynStick ? 8 : 14;
+      const sh = stickIm === images.dynStick ? 36 : 18;
+      ctx.drawImage(stickIm, -sw / 2, -sh / 2, sw, sh);
+    } else {
+      ctx.fillStyle = '#c62828';
+      ctx.fillRect(-2, -10, 4, 20);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(-1, -10, 2, 4);
+    }
+    ctx.restore();
+  }
+
   if (boomFx) {
     const a = Math.max(0, boomFx.life / 0.45);
-    ctx.globalAlpha = a;
-    ctx.fillStyle = '#ff8844';
-    ctx.beginPath();
-    ctx.arc(boomFx.x, boomFx.y, 18 + (1 - a) * 40, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#ffe66d';
-    ctx.beginPath();
-    ctx.arc(boomFx.x, boomFx.y, 8 + (1 - a) * 18, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 1;
+    const boomIm = images.dynBoom;
+    if (boomIm) {
+      ctx.globalAlpha = a;
+      const s = 28 + (1 - a) * 36;
+      ctx.drawImage(boomIm, boomFx.x - s / 2, boomFx.y - s / 2, s, s);
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.globalAlpha = a;
+      ctx.fillStyle = '#ff8844';
+      ctx.beginPath();
+      ctx.arc(boomFx.x, boomFx.y, 18 + (1 - a) * 40, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ffe66d';
+      ctx.beginPath();
+      ctx.arc(boomFx.x, boomFx.y, 8 + (1 - a) * 18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
   }
 }
 
