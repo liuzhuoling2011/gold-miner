@@ -4,7 +4,7 @@
  * Physics/layouts/SFX from original SWF (CWS v6, 550×400 @18fps)
  */
 const W = 550, H = 400, FPS = 18;
-const ASSET_VER = '10';
+const ASSET_VER = '11';
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
@@ -81,11 +81,8 @@ const PLAY_PACK_2X = [
 ];
 const SFX_NAMES = ['level','win','money','click','grab','tick','throw','boom','drop','hit','score','pant'];
 
-// SWF claw object frames (DefineSprite_281 frame = object id) + miner pull loop (sprite 238)
-for (let o = 2; o <= 14; o++) {
-  PLAY_PACK.push(['hookGrab' + o, 'assets/hook/grab_' + o + '.webp']);
-  PLAY_PACK_2X.push(['hookGrab' + o, 'assets/hook/grab_' + o + '@2x.webp']);
-}
+// Miner pull loop (sprite 238). Grab composites unused: they bake a rope stub that
+// disconnects from the drawn rope when scaled; claw+item are drawn separately.
 for (let i = 1; i <= 37; i++) {
   const id = String(i).padStart(2, '0');
   PLAY_PACK.push(['minerPull' + i, 'assets/miner/pull_frames/' + id + '.webp']);
@@ -275,10 +272,8 @@ const PULL_FRAME_MAX = 20; // DefineSprite_238 pull loop before throw label
 // SWF hitTest: tip PlaceObject(256)=shape40 12.4×12.4 vs item.ob.box (shape40 × scales below)
 const TIP_HALF = 6.2;
 const HOOK_OPEN_NATIVE = { w: 28, h: 18 }; // cropped DefineSprite_281/1
-const HOOK_GRAB_NATIVE = {
-  2:{w:20,h:24},3:{w:32,h:33},4:{w:58,h:57},5:{w:74,h:71},6:{w:32,h:27},7:{w:29,h:30},
-  8:{w:45,h:46},9:{w:22,h:40},10:{w:36,h:28},11:{w:20,h:24},12:{w:37,h:41},13:{w:29,h:31},14:{w:33,h:35}
-};
+// Open/closed hook: native crop size + Y offset so metal hinge sits on rope tip.
+const HOOK_OPEN_HINGE = 5;
 // Internal box scales on art sprites (FFDec PlaceObject name=box)
 const ITEM_BOX = {
   gold_s:   { sx: 2.476, sy: 2.476, ox: 1.05, oy: -1.0 },
@@ -879,8 +874,6 @@ function drawClaw() {
   ctx.lineTo(tip.x + 0.5, tip.y);
   ctx.stroke();
 
-  // Claw + caught item. Grab composites scaled to the SAME world size as drawItems
-  // so rocks/gold never shrink when latched (no accidental sx/sy mismatch).
   function itemWorldSize(it) {
     const im = images[it.key];
     const w = Math.max(8, (it.r || 10) * 2.15);
@@ -888,25 +881,13 @@ function drawClaw() {
     return { w, h };
   }
 
+  // Claw art: always the open/closed hook at the rope tip (hinge = tip).
+  // Grab composites bake a thin rope stub above the hinge; scaling them to item
+  // size made that stub a large invisible gap. Draw claw + item separately instead.
   let hk = images.hookOpen;
   let nw = HOOK_OPEN_NATIVE.w, nh = HOOK_OPEN_NATIVE.h;
-  let drewGrab = false;
-  if (claw.state === 'pull' && claw.caught) {
-    const oid = claw.caught.object;
-    const grab = images['hookGrab' + oid];
-    if (grab) {
-      hk = grab;
-      const nat = HOOK_GRAB_NATIVE[oid] || HOOK_OPEN_NATIVE;
-      const world = itemWorldSize(claw.caught);
-      // Match grab frame width to world item width (spot.sx already baked into it.r)
-      const scale = world.w / Math.max(1, nat.w);
-      nw = nat.w * scale;
-      nh = nat.h * scale;
-      drewGrab = true;
-    } else {
-      hk = images.hookClosed || images.hookOpen;
-    }
-  } else if (claw.state === 'pull') {
+  const hingeY = HOOK_OPEN_HINGE;
+  if (claw.state === 'pull') {
     hk = images.hookClosed || images.hookOpen;
   }
 
@@ -915,8 +896,8 @@ function drawClaw() {
   // Same clockwise angle as Flash _rotation / clawTip()
   ctx.rotate(claw.angleDeg * Math.PI / 180);
   if (hk) {
-    // hinge at top-center (rope end)
-    ctx.drawImage(hk, -nw / 2, 0, nw, nh);
+    // Hinge (top of claw metal, minus tiny pad) sits on tip / rope end
+    ctx.drawImage(hk, -nw / 2, -hingeY, nw, nh);
   } else {
     ctx.strokeStyle = '#9aa0a6';
     ctx.lineWidth = 2;
@@ -925,17 +906,18 @@ function drawClaw() {
     ctx.moveTo(8, 1); ctx.quadraticCurveTo(11, 12, 3, 14);
     ctx.stroke();
   }
-  ctx.restore();
 
-  // Fallback: draw item under claw at exact world size if no composite grab frame
-  if (claw.caught && !drewGrab) {
+  // Caught item hangs just below the claw along the rope (local +Y)
+  if (claw.caught) {
     const it = claw.caught;
     const im = images[it.key];
     if (im) {
       const { w: s, h: ih } = itemWorldSize(it);
-      ctx.drawImage(im, tip.x - s / 2, tip.y + 4, s, ih);
+      const holdY = Math.max(nh - hingeY - 2, 8); // nest under claw prongs
+      ctx.drawImage(im, -s / 2, holdY, s, ih);
     }
   }
+  ctx.restore();
 
   // Flying dynamite stick along rope (SWF DefineSprite_250 after frame 34)
   if (dynToss && dynToss.phase === 'fly') {
@@ -1342,7 +1324,7 @@ function frame(ts) {
     const critical = new Set(['playBg','goalSplash','shopBg','shopBgHappy','shopBgAngry','shopNext',
       'minerIdle','minerDown','minerPull','minerUp','minerThrow1','minerThrow2','minerThrow3',
       'hookOpen','hookClosed']);
-    const phase2 = PLAY_PACK.filter(([k]) => critical.has(k) || k.startsWith('hookGrab') || k.startsWith('gold_') || k.startsWith('rock_') || k.startsWith('diamond_') || ['bag','bone','pig','skull','tnt'].includes(k) || k.startsWith('shop'));
+    const phase2 = PLAY_PACK.filter(([k]) => critical.has(k) || k.startsWith('gold_') || k.startsWith('rock_') || k.startsWith('diamond_') || ['bag','bone','pig','skull','tnt'].includes(k) || k.startsWith('shop'));
     const phase3 = PLAY_PACK.filter(([k]) => !phase2.find(p => p[0] === k));
 
     let done = 0;
