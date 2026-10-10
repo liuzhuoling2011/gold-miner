@@ -19,3 +19,8 @@
 - `swf/mainload.swf`, `swf/as3.swf` — 4399 loader shells
 - `ffdec-export/` — FFDec script/shape/sprite/sound export
 - `refs/ruffle_*.png` — Ruffle title screenshots
+
+## Polish 2026-10-10 (claw / hit / pant)
+- Claw art: DefineSprite_281 open + object grab frames (native ~28×18 open)
+- HitTest: tip AABB ±6.2 vs item.ob.box (shape40 × FFDec scales × place sx/sy)
+- Miner pull: sprite 238 frame loop; pant.mp3 when weight>1 and slow pull

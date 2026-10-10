@@ -4,7 +4,7 @@
  * Physics/layouts/SFX from original SWF (CWS v6, 550×400 @18fps)
  */
 const W = 550, H = 400, FPS = 18;
-const ASSET_VER = '4';
+const ASSET_VER = '5';
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
@@ -47,7 +47,6 @@ const PLAY_PACK = [
   ['minerThrow2', 'assets/miner/throw2.webp'],
   ['minerThrow3', 'assets/miner/throw3.webp'],
   ['hookOpen', 'assets/hook/open.webp'],
-  ['hookGrab', 'assets/hook/grab.webp'],
   ['hookClosed', 'assets/hook/closed.webp'],
   ['gold_s', 'assets/items/gold_s.webp'],
   ['gold_m', 'assets/items/gold_m.webp'],
@@ -66,7 +65,15 @@ const PLAY_PACK = [
 const PLAY_PACK_2X = [
   ['playBg', 'assets/ui/play_bg@2x.webp'],
 ];
-const SFX_NAMES = ['level','win','money','click','grab','tick','throw','boom','drop','hit','score'];
+const SFX_NAMES = ['level','win','money','click','grab','tick','throw','boom','drop','hit','score','pant'];
+
+// SWF claw object frames (DefineSprite_281 frame = object id) + miner pull loop (sprite 238)
+for (let o = 2; o <= 14; o++) PLAY_PACK.push(['hookGrab' + o, 'assets/hook/grab_' + o + '.webp']);
+for (let i = 1; i <= 37; i++) {
+  const id = String(i).padStart(2, '0');
+  PLAY_PACK.push(['minerPull' + i, 'assets/miner/pull_frames/' + id + '.webp']);
+}
+
 
 function loadImage(key, url) {
   return new Promise((res, rej) => {
@@ -136,6 +143,29 @@ const PULL_PX_PER_FRAME = 1.385;      // claw Y step on pull timeline
 const BASE_STRENGTH = 10;
 const LEN_MIN = 12.45;
 const LEN_MAX = 407;
+// SWF hitTest: tip PlaceObject(256)=shape40 12.4×12.4 vs item.ob.box (shape40 × scales below)
+const TIP_HALF = 6.2;
+const HOOK_OPEN_NATIVE = { w: 28, h: 18 }; // cropped DefineSprite_281/1
+const HOOK_GRAB_NATIVE = {
+  2:{w:20,h:24},3:{w:32,h:33},4:{w:58,h:57},5:{w:74,h:71},6:{w:32,h:27},7:{w:29,h:30},
+  8:{w:45,h:46},9:{w:22,h:40},10:{w:36,h:28},11:{w:20,h:24},12:{w:37,h:41},13:{w:29,h:31},14:{w:33,h:35}
+};
+// Internal box scales on art sprites (FFDec PlaceObject name=box)
+const ITEM_BOX = {
+  gold_s:   { sx: 2.476, sy: 2.476, ox: 1.05, oy: -1.0 },
+  gold_m:   { sx: 2.476, sy: 2.476, ox: 1.05, oy: -1.0 },
+  gold_l:   { sx: 2.476, sy: 2.476, ox: 1.05, oy: -1.0 },
+  gold_xl:  { sx: 2.476, sy: 2.476, ox: 1.05, oy: -1.0 },
+  rock_m:   { sx: 3.368, sy: 2.781, ox: 4.30, oy: -7.65 },
+  rock_l:   { sx: 2.960, sy: 2.960, ox: 5.85, oy: 10.2 },
+  diamond_s:{ sx: 1.379, sy: 1.379, ox: -0.45, oy: 4.2 },
+  diamond_m:{ sx: 2.032, sy: 2.032, ox: 0.15, oy: -1.0 },
+  bag:      { sx: 3.250, sy: 3.250, ox: -0.45, oy: 1.8 },
+  bone:     { sx: 2.540, sy: 1.355, ox: 3.65, oy: 4.25 },
+  pig:      { sx: 2.032, sy: 2.032, ox: 0.15, oy: -1.0 },
+  skull:    { sx: 2.282, sy: 2.282, ox: 0.55, oy: -0.8 },
+  tnt:      { sx: 4.105, sy: 5.081, ox: 4.95, oy: 10.4 },
+};
 
 const ITEM_DEFS = {
   gold_s:   { object: 2,  price: 50,  weight: 3, r: 10, key: 'gold_s' },
@@ -187,6 +217,8 @@ let throwTimer = 0;
 let boomFx = null; // {x,y,life}
 let dropSfxCool = 0;
 let goalTimer = 0;
+let minerAnim = 1;      // sprite 238 frame 1..37
+let pantCool = 0;
 
 function resetRun() {
   score = 0; level = 1; levelDis = 1;
@@ -256,6 +288,8 @@ function startLevel() {
   minerPose = 'idle';
   throwTimer = 0;
   hintAlpha = 1;
+  minerAnim = 1;
+  pantCool = 0;
   items = [];
   const layout = pickLevelLayout(level);
   if (layout) {
@@ -263,6 +297,7 @@ function startLevel() {
       const def = ITEM_DEFS[spot.key];
       if (!def) continue;
       const sc = (spot.sx + spot.sy) / 2;
+      const box = ITEM_BOX[def.key] || { sx: 2.5, sy: 2.5, ox: 0, oy: 0 };
       items.push({
         x: spot.x, y: spot.y,
         r: def.r * sc,
@@ -270,6 +305,11 @@ function startLevel() {
         key: def.key, def,
         price: priceOf(def), weight: weightOf(def),
         alive: true, object: def.object,
+        // Flash AABB half-extents of .ob.box in stage px
+        boxHx: TIP_HALF * box.sx * spot.sx,
+        boxHy: TIP_HALF * box.sy * spot.sy,
+        boxOx: box.ox * spot.sx,
+        boxOy: box.oy * spot.sy,
       });
     }
   }
@@ -320,7 +360,9 @@ function grabItem(it) {
   claw.stickBonus = (it.weight === -1) ? 1 : 0;
   if (it.weight === -1) claw.weight = 0;
   it.alive = false;
-  minerPose = 'up';
+  minerPose = 'pull';
+  minerAnim = 1;
+  pantCool = 0;
   playSfx('hit', 0.5);
   playSfx('grab', 0.35);
 }
@@ -437,11 +479,14 @@ function logicStep() {
       claw.stickBonus = 1; // empty return is fast (SWF stickBonus path)
       minerPose = 'up';
     } else {
-      // hitTest tip vs item body (SWF: claw.box hitTests T.ob.box)
+      // SWF: tip (shape40 ±6.2) hitTest item.ob.box AABB
       for (const it of items) {
         if (!it.alive) continue;
-        const hr = Math.max(6, it.r * 0.62);
-        if (Math.hypot(it.x - tip.x, it.y - tip.y) < hr) {
+        const cx = it.x + (it.boxOx || 0);
+        const cy = it.y + (it.boxOy || 0);
+        const hx = it.boxHx || Math.max(8, it.r * 0.7);
+        const hy = it.boxHy || Math.max(8, it.r * 0.7);
+        if (Math.abs(tip.x - cx) <= TIP_HALF + hx && Math.abs(tip.y - cy) <= TIP_HALF + hy) {
           grabItem(it);
           break;
         }
@@ -457,9 +502,25 @@ function logicStep() {
       claw.caught.x = tip.x;
       claw.caught.y = tip.y + Math.max(6, claw.caught.r * 0.25);
     }
-    if (minerPose !== 'throw') minerPose = (claw.caught && (claw.weight || 0) >= 7) ? 'pull' : 'up';
+    // SWF miner.gotoAndStop("up") → nested sprite 238 loops at 18fps
+    if (minerPose !== 'throw') {
+      minerPose = 'pull';
+      minerAnim = (minerAnim % 37) + 1;
+    }
+    // Heavy pull (weight>1 and not fast path): pant like original effort
+    const heavy = claw.caught && !claw.stickBonus && !strengthFlag && (claw.weight || 0) > 1;
+    if (heavy) {
+      pantCool -= dt;
+      if (pantCool <= 0) {
+        playSfx('pant', 0.42);
+        pantCool = 0.70;
+      }
+    } else {
+      pantCool = 0;
+    }
     if (claw.len <= LEN_MIN) {
       claw.len = LEN_MIN;
+      pantCool = 0;
       finishPull();
       if (timeLeft <= 0) endLevel();
     }
@@ -553,68 +614,81 @@ function drawHUD() {
 }
 
 function drawMiner() {
-  let key = 'minerIdle';
-  if (minerPose === 'down') key = 'minerDown';
-  else if (minerPose === 'up') key = 'minerUp';
-  else if (minerPose === 'pull') key = 'minerPull';
+  let im = images.minerIdle;
+  if (minerPose === 'down') im = images.minerDown || im;
   else if (minerPose === 'throw') {
     const t = throwTimer;
-    key = t > 0.3 ? 'minerThrow1' : t > 0.15 ? 'minerThrow2' : 'minerThrow3';
+    const key = t > 0.3 ? 'minerThrow1' : t > 0.15 ? 'minerThrow2' : 'minerThrow3';
+    im = images[key] || im;
+  } else if (minerPose === 'pull' || minerPose === 'up') {
+    im = images['minerPull' + minerAnim] || images.minerPull || images.minerUp || im;
   }
-  const im = images[key] || images.minerIdle || images.minerPull;
   if (!im) return;
-  // SWF miner placed at scale ~0.389 of 166×150 ≈ 64×58, but art looks larger in practice
-  const mw = 96;
+  // SWF: miner scale 0.389 of ~166×150 → ~65×58; slightly larger for readability
+  const mw = 72;
   const mh = mw * im.height / im.width;
-  ctx.drawImage(im, MINER_POS.x - mw / 2, 6, mw, mh);
+  ctx.drawImage(im, MINER_POS.x - mw / 2, 4, mw, mh);
 }
 
 function drawClaw() {
   const tip = clawTip();
-  // rope
+  // rope to claw hinge (SWF tip/claw registration ≈ rope end)
   ctx.strokeStyle = '#1a1a1a';
-  ctx.lineWidth = 2.2;
+  ctx.lineWidth = 1.6;
   ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.moveTo(PIVOT.x, PIVOT.y);
   ctx.lineTo(tip.x, tip.y);
   ctx.stroke();
-  // thin highlight
-  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-  ctx.lineWidth = 0.8;
+  ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+  ctx.lineWidth = 0.7;
   ctx.beginPath();
-  ctx.moveTo(PIVOT.x + 0.6, PIVOT.y);
-  ctx.lineTo(tip.x + 0.6, tip.y);
+  ctx.moveTo(PIVOT.x + 0.5, PIVOT.y);
+  ctx.lineTo(tip.x + 0.5, tip.y);
   ctx.stroke();
 
-  // hook sprite
+  // Original claw: DefineSprite_281 — open frame1, grabbed = gotoAndStop(object)
   let hk = images.hookOpen;
-  if (claw.state === 'pull' && claw.caught) hk = images.hookGrab || images.hookClosed;
-  else if (claw.state === 'pull') hk = images.hookClosed || images.hookGrab;
-  else if (claw.state === 'drop') hk = images.hookOpen;
+  let nw = HOOK_OPEN_NATIVE.w, nh = HOOK_OPEN_NATIVE.h;
+  let drewGrab = false;
+  if (claw.state === 'pull' && claw.caught) {
+    const oid = claw.caught.object;
+    const grab = images['hookGrab' + oid];
+    if (grab) {
+      hk = grab;
+      const nat = HOOK_GRAB_NATIVE[oid] || HOOK_OPEN_NATIVE;
+      nw = nat.w; nh = nat.h;
+      drewGrab = true;
+    } else {
+      hk = images.hookClosed || images.hookOpen;
+    }
+  } else if (claw.state === 'pull') {
+    hk = images.hookClosed || images.hookOpen;
+  }
+
   ctx.save();
   ctx.translate(tip.x, tip.y);
   ctx.rotate(claw.angleDeg * Math.PI / 180);
   if (hk) {
-    const s = 42;
-    ctx.drawImage(hk, -s / 2, -6, s, s);
+    // hinge at top-center (rope end); native SWF pixel size
+    ctx.drawImage(hk, -nw / 2, 0, nw, nh);
   } else {
-    ctx.strokeStyle = '#c8ccd0';
+    ctx.strokeStyle = '#9aa0a6';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(-7, 2); ctx.quadraticCurveTo(-12, 16, -2, 18);
-    ctx.moveTo(0, 2); ctx.lineTo(0, 18);
-    ctx.moveTo(7, 2); ctx.quadraticCurveTo(12, 16, 2, 18);
+    ctx.moveTo(-8, 1); ctx.quadraticCurveTo(-11, 12, -3, 14);
+    ctx.moveTo(8, 1); ctx.quadraticCurveTo(11, 12, 3, 14);
     ctx.stroke();
   }
   ctx.restore();
 
-  if (claw.caught) {
+  // Fallback: draw item under claw if no composite grab frame
+  if (claw.caught && !drewGrab) {
     const it = claw.caught;
     const im = images[it.key];
     if (im) {
       const s = it.r * 2.15;
-      ctx.drawImage(im, tip.x - s / 2, tip.y + 2, s, s * im.height / im.width);
+      ctx.drawImage(im, tip.x - s / 2, tip.y + 4, s, s * im.height / im.width);
     }
   }
 
