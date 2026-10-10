@@ -4,10 +4,11 @@
  * Physics/layouts/SFX from original SWF (CWS v6, 550×400 @18fps)
  */
 const W = 550, H = 400, FPS = 18;
-const ASSET_VER = '13';
+const ASSET_VER = '14';
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
+let padsReady = false;
 function fit() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   canvas.width = Math.round(W * dpr);
@@ -17,9 +18,11 @@ function fit() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
+  if (padsReady) layoutPads();
 }
 fit();
-addEventListener('resize', fit);
+addEventListener('resize', () => { fit(); });
+addEventListener('orientationchange', () => setTimeout(fit, 60));
 
 const images = {};
 const TITLE_PACK = [
@@ -364,11 +367,101 @@ let shopExitTimer = 0;
 let resultOk = false;
 let lastTs = 0;
 let logicAcc = 0;
-let isTouch = matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window;
-// Phone-only virtual buttons (bottom-right): drop claw + dynamite
-let dropBtn = { x: W - 52, y: H - 118, r: 34 };
-let dynBtn = { x: W - 52, y: H - 46, r: 34 };
+let isTouch = matchMedia('(pointer:coarse)').matches || (navigator.maxTouchPoints || 0) > 0 || 'ontouchstart' in window;
+// Phone/tablet virtual pads — HTML overlay in letterbox (bottom-right), NOT on 550×400 playfield
+const padsEl = document.getElementById('pads');
+const btnDrop = document.getElementById('btnDrop');
+const btnDyn = document.getElementById('btnDyn');
+const dynCountEl = document.getElementById('dynCount');
+let padsEnabled = false;
 let hintAlpha = 1;
+
+function detectTouchUI() {
+  const coarse = matchMedia('(pointer:coarse)').matches;
+  const touchPts = (navigator.maxTouchPoints || 0) > 0;
+  const small = Math.min(innerWidth, innerHeight) < 900;
+  padsEnabled = !!(coarse || touchPts || ('ontouchstart' in window && small));
+  isTouch = padsEnabled;
+  layoutPads();
+}
+function safeInset() { return 10; }
+/** Place dual pads in empty margin right/bottom of letterboxed canvas (portrait & landscape). */
+function layoutPads() {
+  if (!padsReady || !padsEl) return;
+  if (!padsEnabled) {
+    padsEl.classList.remove('on');
+    padsEl.setAttribute('aria-hidden', 'true');
+    return;
+  }
+  const sr = canvas.getBoundingClientRect();
+  const vw = innerWidth, vh = innerHeight;
+  const safe = safeInset();
+  const short = Math.min(vw, vh);
+  const btn = Math.round(Math.min(72, Math.max(56, short * 0.14)));
+  const gap = 10;
+  const stackH = btn * 2 + gap;
+  const stackW = btn;
+
+  const gapBelow = vh - sr.bottom;
+  const gapRight = vw - sr.right;
+  const gapLeft = sr.left;
+  let left, top;
+
+  if (gapBelow >= stackH + safe + 4) {
+    // Portrait / tall: bottom letterbox, right side
+    left = Math.min(vw - stackW - safe, Math.max(safe, sr.right - stackW));
+    top = vh - stackH - safe;
+    if (top < sr.bottom + 2) top = sr.bottom + 2;
+  } else if (gapRight >= stackW + safe + 4) {
+    // Landscape: right letterbox, lower end
+    left = Math.min(vw - stackW - safe, sr.right + 8);
+    top = Math.min(vh - stackH - safe, Math.max(sr.top + 8, sr.bottom - stackH - 4));
+  } else if (gapLeft >= stackW + safe + 4 && gapLeft > gapRight) {
+    // More room on left — still prefer bottom-right of viewport if possible
+    left = Math.min(vw - stackW - safe, sr.right + 4);
+    top = Math.min(vh - stackH - safe, Math.max(sr.top + 8, sr.bottom - stackH - 4));
+    if (left + stackW > vw - 4 || left < sr.right - 4) {
+      left = Math.max(safe, sr.left - stackW - 8);
+      top = Math.min(vh - stackH - safe, Math.max(sr.top + 8, sr.bottom - stackH - 4));
+    }
+  } else {
+    // No usable letterbox — hide rather than cover the 550×400 playfield
+    padsEl.classList.remove('on');
+    padsEl.setAttribute('aria-hidden', 'true');
+    return;
+  }
+
+  padsEl.style.left = Math.round(left) + 'px';
+  padsEl.style.top = Math.round(top) + 'px';
+  padsEl.style.width = stackW + 'px';
+  padsEl.style.gap = gap + 'px';
+  for (const b of [btnDrop, btnDyn]) {
+    if (!b) continue;
+    b.style.width = btn + 'px';
+    b.style.height = btn + 'px';
+    b.style.fontSize = Math.round(btn * 0.22) + 'px';
+  }
+  syncPadsVisibility();
+}
+function syncPadsVisibility() {
+  if (!padsEl) return;
+  const show = padsEnabled && mode === 'play';
+  padsEl.classList.toggle('on', show);
+  padsEl.setAttribute('aria-hidden', show ? 'false' : 'true');
+  refreshPadState();
+}
+function refreshPadState() {
+  if (!padsReady || !btnDrop || !btnDyn) return;
+  const swinging = mode === 'play' && claw && claw.state === 'swing';
+  btnDrop.classList.toggle('armed', !!swinging);
+  btnDyn.classList.toggle('armed', stick > 0);
+  btnDyn.disabled = stick <= 0;
+  if (dynCountEl) dynCountEl.textContent = String(stick);
+}
+padsReady = true;
+detectTouchUI();
+addEventListener('resize', detectTouchUI);
+addEventListener('orientationchange', () => setTimeout(detectTouchUI, 60));
 let minerPose = 'idle'; // idle | down | up | pull | throw
 let throwTimer = 0;
 let boomFx = null; // {x,y,life}
@@ -390,6 +483,7 @@ function resetRun() {
 function showGoal() {
   mode = 'goal';
   goalTimer = 0;
+  syncPadsVisibility();
 }
 
 function effectiveStrength() {
@@ -433,6 +527,7 @@ function pickLevelLayout(lv) {
 
 function startLevel() {
   mode = 'play';
+  syncPadsVisibility();
   timeLeft = 60;
   strengthFlag = 0;
   claw = {
@@ -627,6 +722,7 @@ function endLevel() {
   minerStrength = BASE_STRENGTH;
   resultOk = score >= goal;
   mode = 'result';
+  syncPadsVisibility();
   playSfx(resultOk ? 'win' : 'tick');
 }
 
@@ -659,6 +755,7 @@ function buildShop() {
   shopItems = shopItems.slice(0, 4);
   shopSel = -1;
   mode = 'shop';
+  syncPadsVisibility();
 }
 
 function leaveShop() {
@@ -674,7 +771,7 @@ function nextLevel() {
   goal += goalAddOn;
   levelDis += 1;
   level += 1;
-  if (level > 10) { mode = 'win'; return; }
+  if (level > 10) { mode = 'win'; syncPadsVisibility(); return; }
   showGoal();
 }
 
@@ -1145,33 +1242,15 @@ function drawWin() {
 }
 
 function drawTouchControls() {
-  if (!isTouch || mode !== 'play') return;
-  function pad(btn, label, active, sub) {
-    ctx.beginPath();
-    ctx.arc(btn.x, btn.y, btn.r, 0, Math.PI * 2);
-    ctx.fillStyle = active ? 'rgba(220,80,40,0.55)' : 'rgba(20,20,20,0.45)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 13px "Microsoft YaHei",sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(label, btn.x, btn.y + (sub ? -4 : 5));
-    if (sub != null) {
-      ctx.font = '12px sans-serif';
-      ctx.fillText(String(sub), btn.x, btn.y + 14);
-    }
-    ctx.textAlign = 'left';
-  }
-  pad(dropBtn, '放钩', claw.state === 'swing', null);
-  pad(dynBtn, '炸药', stick > 0, stick);
+  // Pads are HTML in letterbox; only a brief on-canvas hint remains
+  refreshPadState();
+  if (!padsEnabled || mode !== 'play') return;
   if (hintAlpha > 0 && claw.state === 'swing') {
     ctx.globalAlpha = Math.min(1, hintAlpha);
     ctx.fillStyle = '#fff';
     ctx.font = '14px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('点「放钩」或屏幕放钩子', W / 2, H - 24);
+    ctx.fillText('点右下「放钩」或屏幕放钩子', W / 2, H - 24);
     ctx.textAlign = 'left';
     ctx.globalAlpha = 1;
   }
@@ -1267,21 +1346,27 @@ function onPointer(e) {
   if (mode === 'play') {
     if (p.x > W - 200 && p.x < W - 144 && p.y > 6 && p.y < 38) {
       mode = 'title';
+      syncPadsVisibility();
       return;
-    }
-    if (isTouch) {
-      if (Math.hypot(p.x - dynBtn.x, p.y - dynBtn.y) < dynBtn.r + 10) {
-        useDynamite();
-        return;
-      }
-      if (Math.hypot(p.x - dropBtn.x, p.y - dropBtn.y) < dropBtn.r + 10) {
-        dropClaw();
-        return;
-      }
     }
     dropClaw();
   }
 }
+
+function bindPad(el, fn) {
+  if (!el) return;
+  const fire = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    unlockAudio();
+    fn();
+    refreshPadState();
+  };
+  el.addEventListener('pointerdown', fire);
+  el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
+}
+bindPad(btnDrop, () => { if (mode === 'play') dropClaw(); });
+bindPad(btnDyn, () => { if (mode === 'play') useDynamite(); });
 
 canvas.addEventListener('mousedown', onPointer);
 canvas.addEventListener('touchstart', (e) => { e.preventDefault(); onPointer(e); }, { passive: false });
@@ -1364,4 +1449,4 @@ function frame(ts) {
   }
 })();
 
-window.__GM = { resetRun, dropClaw, useDynamite, get mode(){return mode}, get items(){return items}, get claw(){return claw} };
+window.__GM = { resetRun, dropClaw, useDynamite, layoutPads, detectTouchUI, get mode(){return mode}, get items(){return items}, get claw(){return claw} };
