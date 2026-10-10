@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>黄金矿工</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body{margin:0;height:100%;background:#0d0d0d;overflow:hidden;
+    font-family:"PingFang SC","Microsoft YaHei",sans-serif;-webkit-tap-highlight-color:transparent;touch-action:none;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  canvas{display:block;max-width:100%;max-height:100%;background:#000;box-shadow:0 0 0 2px #333;}
+  #load{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    background:#111;color:#f5d76e;z-index:5;gap:12px;}
+  #load bar{display:block;width:200px;height:8px;background:#333;border-radius:4px;overflow:hidden;}
+  #load i{display:block;height:100%;width:0;background:linear-gradient(90deg,#c9a227,#f5d76e);}
+  #load.hide{opacity:0;pointer-events:none;transition:opacity .35s;}
+</style>
+</head>
+<body>
+<div id="load"><div>黄金矿工加载中…</div><bar><i id="bar"></i></bar><div id="pct">0%</div></div>
+<div id="wrap"><canvas id="c" width="550" height="400"></canvas></div>
+<script src="game.js?v=1"></script>
+</body>
+</html>
