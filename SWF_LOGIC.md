@@ -62,3 +62,29 @@ Sprite 188: time -= 1 per tick (~1s); at 0 → end if not busy.
 
 ## Level thing counts
 L1:15 L2:20 L3:17 L4:18 L5:22 L6:22 L7:20 L8:18/27 L9:26 L10:16/26 (layout variants _1/_2/_3)
+
+## Claw physics (sprite 289 + 288) — remake v2
+- Pivot `_root.C` at **(275.5, 48.6)**; miner at (285.85, 34.75) scale 0.389
+- Swing: sprite 289 timeline **87 frames**, angle table ≈ **−67°…+68°** (see `swing_angles.json`)
+- Drop: claw Y += **≈9.86 px/frame** @18fps (~177 px/s); max len ~407
+- Pull: timeline ~1.385 px/frame; each enterFrame advances `(minerStrength−weight)` frames, or **+15** if stickBonus/strength
+- Dynamite (↑): destroys **caught item only** (price=0, stickBonus=1); boom sound 254 — not AOE
+- ←/→ during drop force pull-up
+
+## Level layouts
+All `L1_1`…`L10_3` PlaceObject coords extracted to `levels.json` / remake `levels.js`.
+
+## SFX (DefineSound chid → event)
+| id | event |
+|----|-------|
+| 47 | level start / next |
+| 54 | win / yes |
+| 86 | money |
+| 123 | click/UI |
+| 137 | grab |
+| 219 | tick |
+| 236 | throw dynamite |
+| 254 | boom |
+| 257 | drop whoosh |
+| 261 | hit |
+| 294 | score popup |

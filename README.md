@@ -1,30 +1,16 @@
-# 黄金矿工（HTML5）
+# 黄金矿工（HTML5 remake）
 
-4399 Flash《黄金矿工中文版》（flash id **1602**）的现代 HTML5 Canvas 复刻。
+4399 Flash [1602](https://www.4399.com/flash/1602_2.htm) 《黄金矿工中文版》的现代 Canvas 复刻。
 
-- 原版 SWF：`game.swf`（CWS Flash 6，550×400 @ 18fps）
-- 逻辑常量来自 FFDec 导出的 AVM1/AS2（关卡目标、力气、重量、商店）
-- 素材从原版 SWF 导出并转 WebP；音效为原版 DefineSound
+**游玩：** https://liuzhuoling2011.github.io/gold-miner/
 
-## 操作
+## 相对原版 SWF 的对齐（v2）
+- 舞台 550×400，逻辑步进 **18fps**
+- 钩爪摆动：原版 sprite 289 的 **87 帧角度表**（约 ±67°）
+- 下放 / 上拉速度按 SWF 时间轴（约 9.86 / 1.385 px·frame）
+- **全部 L1_1…L10_3** 物件坐标来自 PlaceObject，不再随机散落
+- 炸药只炸掉当前抓取物（与原版一致）
+- 音效按 DefineSound 事件映射（level/win/money/drop/hit/boom…）
+- 矿工 idle / down / up / pull / throw 多帧；金属钩爪与泥土背景
 
-| 桌面 | 手机 |
-|------|------|
-| ↓ / 空格 / 点击：放钩 | 点屏幕：放钩 |
-| ↑ / D：丢炸药 | 右下角「炸药」按钮 |
-
-## 本地打开
-
-直接打开 `index.html`，或：
-
-```bash
-python3 -m http.server 8080
-```
-
-## 在线
-
-GitHub Pages：见仓库 Settings → Pages，或 `https://liuzhuoling2011.github.io/gold-miner/`
-
-## 说明
-
-非商业、学习向复刻；原游戏版权归原作者/4399。通关数值按 SWF 中 `goalAddOn` 意图实现（原脚本存在 `goalAddon` 拼写不一致）。
+操作：↓ / 点屏幕放钩；↑ / 右下角按钮丢炸药。

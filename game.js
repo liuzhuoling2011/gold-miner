@@ -1,14 +1,13 @@
 'use strict';
 /**
  * 黄金矿工 HTML5 remake — 4399 flash/1602
- * Logic constants from SWF AVM1 (see /workspace/4399-1602/SWF_LOGIC.md)
+ * Physics/layouts/SFX from original SWF (CWS v6, 550×400 @18fps)
  */
-const W = 550, H = 400;
-const ASSET_VER = '1';
+const W = 550, H = 400, FPS = 18;
+const ASSET_VER = '2';
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
-// ----- DPR -----
 function fit() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   canvas.width = Math.round(W * dpr);
@@ -22,18 +21,26 @@ function fit() {
 fit();
 addEventListener('resize', fit);
 
-// ----- Assets -----
 const images = {};
 const TITLE_PACK = [
-  ['titleBg', 'assets/ui/title_bg.webp'],
+  ['titleMiner', 'assets/ui/title_miner.webp'],
   ['startBtn', 'assets/ui/start_btn.webp'],
   ['controls', 'assets/ui/controls.webp'],
-  ['titleMiner', 'assets/ui/title_miner.webp'],
 ];
 const PLAY_PACK = [
-  ['minerIdle', 'assets/miner/miner_idle.webp'],
-  ['minerPull', 'assets/miner/miner_pull.webp'],
+  ['playBg', 'assets/ui/play_bg.webp'],
+  ['hudPanel', 'assets/ui/hud_panel.webp'],
   ['shopkeeper', 'assets/ui/shopkeeper.webp'],
+  ['minerIdle', 'assets/miner/idle.webp'],
+  ['minerDown', 'assets/miner/down.webp'],
+  ['minerUp', 'assets/miner/up.webp'],
+  ['minerPull', 'assets/miner/pull.webp'],
+  ['minerThrow1', 'assets/miner/throw1.webp'],
+  ['minerThrow2', 'assets/miner/throw2.webp'],
+  ['minerThrow3', 'assets/miner/throw3.webp'],
+  ['hookOpen', 'assets/hook/open.webp'],
+  ['hookGrab', 'assets/hook/grab.webp'],
+  ['hookClosed', 'assets/hook/closed.webp'],
   ['gold_s', 'assets/items/gold_s.webp'],
   ['gold_m', 'assets/items/gold_m.webp'],
   ['gold_l', 'assets/items/gold_l.webp'],
@@ -48,7 +55,7 @@ const PLAY_PACK = [
   ['skull', 'assets/items/skull.webp'],
   ['tnt', 'assets/items/tnt.webp'],
 ];
-const SFX_NAMES = ['sfx1','sfx2','sfx3','sfx4','sfx5','sfx6','sfx7','sfx8','sfx9','sfx10','sfx11'];
+const SFX_NAMES = ['level','win','money','click','grab','tick','throw','boom','drop','hit','score'];
 
 function loadImage(key, url) {
   return new Promise((res, rej) => {
@@ -59,7 +66,6 @@ function loadImage(key, url) {
   });
 }
 
-// Web Audio
 let audioCtx = null;
 const audioBuffers = {};
 function ensureAudio() {
@@ -70,25 +76,22 @@ async function loadSfx(name) {
   try {
     ensureAudio();
     const r = await fetch('assets/sfx/' + name + '.mp3?v=' + ASSET_VER);
-    const ab = await r.arrayBuffer();
-    audioBuffers[name] = await audioCtx.decodeAudioData(ab);
-  } catch (e) { /* optional */ }
+    audioBuffers[name] = await audioCtx.decodeAudioData(await r.arrayBuffer());
+  } catch (e) {}
 }
-function playSfx(name, rate = 1) {
+function playSfx(name, vol = 0.55) {
   try {
     ensureAudio();
     const buf = audioBuffers[name];
     if (!buf) return;
     const src = audioCtx.createBufferSource();
     src.buffer = buf;
-    src.playbackRate.value = rate;
     const g = audioCtx.createGain();
-    g.gain.value = 0.55;
+    g.gain.value = vol;
     src.connect(g); g.connect(audioCtx.destination);
     src.start(0);
   } catch (e) {}
 }
-
 function setLoad(p) {
   const bar = document.getElementById('bar');
   const pct = document.getElementById('pct');
@@ -96,68 +99,64 @@ function setLoad(p) {
   if (pct) pct.textContent = (p * 100).toFixed(0) + '%';
 }
 
-// ----- Game constants from SWF -----
-const PIVOT = { x: 275, y: 72 }; // claw origin under miner
-const SWING_MAX = 1.15; // radians from vertical
-const SWING_SPEED = 1.35; // rad/s
-const DROP_SPEED = 220; // px/s
+// ----- SWF constants -----
+const PIVOT = { x: 275.5, y: 48.6 };
+const MINER_POS = { x: 285.85, y: 34.75, scale: 0.389 };
+const DROP_PX_PER_FRAME = 9.86;       // timeline Y step
+const PULL_PX_PER_FRAME = 1.385;      // claw Y step on pull timeline
 const BASE_STRENGTH = 10;
-const LEVEL_THINGS = [15, 20, 17, 18, 22, 22, 20, 18, 26, 26];
+const LEN_MIN = 12.45;
+const LEN_MAX = 407;
 
 const ITEM_DEFS = {
-  gold_s:  { object: 2,  price: 50,  weight: 3, r: 16, key: 'gold_s' },
-  gold_m:  { object: 3,  price: 100, weight: 7, r: 14, key: 'gold_m' },
-  gold_l:  { object: 4,  price: 250, weight: 8, r: 22, key: 'gold_l' },
-  gold_xl: { object: 5,  price: 500, weight: 9, r: 28, key: 'gold_xl' },
-  rock_m:  { object: 14, price: 11, weight: 8, r: 22, key: 'rock_m', rock: true },
-  rock_l:  { object: 8,  price: 20, weight: 9, r: 26, key: 'rock_l', rock: true },
-  diamond_s:{object: 11, price: 600, weight: 2, r: 12, key: 'diamond_s', diamond: true },
-  diamond_m:{object: 10, price: 602, weight: 5, r: 16, key: 'diamond_m', diamond: true },
-  bag:     { object: 12, price: 0,   weight: 4, r: 20, key: 'bag', bag: true },
-  bone:    { object: 7,  price: 7,   weight: 3, r: 12, key: 'bone' },
-  pig:     { object: 6,  price: 2,   weight: 3, r: 12, key: 'pig' },
-  skull:   { object: 13, price: 20,  weight: 2, r: 12, key: 'skull' },
-  tnt:     { object: 9,  price: 1,   weight: 2, r: 16, key: 'tnt', tnt: true },
+  gold_s:   { object: 2,  price: 50,  weight: 3, r: 10, key: 'gold_s' },
+  gold_m:   { object: 3,  price: 100, weight: 7, r: 14, key: 'gold_m' },
+  gold_l:   { object: 4,  price: 250, weight: 8, r: 26, key: 'gold_l' },
+  gold_xl:  { object: 5,  price: 500, weight: 9, r: 34, key: 'gold_xl' },
+  rock_m:   { object: 14, price: 11, weight: 8, r: 22, key: 'rock_m', rock: true },
+  rock_l:   { object: 8,  price: 20, weight: 9, r: 30, key: 'rock_l', rock: true },
+  diamond_s:{ object: 11, price: 600, weight: 2, r: 10, key: 'diamond_s', diamond: true },
+  diamond_m:{ object: 10, price: 602, weight: 5, r: 14, key: 'diamond_m', diamond: true },
+  bag:      { object: 12, price: 0,   weight: 4, r: 22, key: 'bag', bag: true },
+  bone:     { object: 7,  price: 7,   weight: 3, r: 14, key: 'bone' },
+  pig:      { object: 6,  price: 2,   weight: 3, r: 12, key: 'pig' },
+  skull:    { object: 13, price: 20,  weight: 2, r: 14, key: 'skull' },
+  tnt:      { object: 9,  price: 1,   weight: 2, r: 18, key: 'tnt', tnt: true },
 };
 
-const LEVEL_POOLS = [
-  ['gold_s','gold_s','gold_m','gold_l','rock_m','rock_l','bone','skull','bag','gold_s','rock_m','gold_m','pig','diamond_s','tnt'],
-  ['gold_s','gold_m','gold_l','gold_xl','rock_m','rock_l','rock_l','bag','bone','skull','diamond_s','gold_m','gold_s','rock_m','pig','tnt','gold_l','skull','bone','bag'],
-  ['gold_m','gold_l','gold_xl','rock_l','rock_m','diamond_s','diamond_m','bag','gold_s','rock_m','bone','skull','gold_l','tnt','pig','gold_m','rock_l'],
-  ['gold_l','gold_xl','gold_m','rock_l','rock_m','diamond_m','bag','bone','gold_s','skull','rock_l','gold_l','tnt','diamond_s','pig','gold_m','rock_m','bag'],
-  ['gold_xl','gold_l','gold_m','rock_l','rock_l','diamond_m','diamond_s','bag','bag','gold_s','skull','bone','tnt','pig','rock_m','gold_l','gold_m','rock_m','diamond_s','gold_xl','skull','bone'],
-];
-
-function poolForLevel(lv) {
-  const base = LEVEL_POOLS[Math.min(lv - 1, LEVEL_POOLS.length - 1)];
-  const n = LEVEL_THINGS[Math.min(lv - 1, LEVEL_THINGS.length - 1)] || 20;
-  const out = [];
-  for (let i = 0; i < n; i++) out.push(base[i % base.length]);
-  return out;
-}
+const SWING = (typeof GM_SWING !== 'undefined' && GM_SWING.length) ? GM_SWING : (() => {
+  const a = [];
+  for (let i = 0; i < 87; i++) a.push(Math.sin(i / 86 * Math.PI * 2) * 67);
+  return a;
+})();
 
 // ----- State -----
-let mode = 'title'; // title | play | shop | result | win
+let mode = 'title';
 let score = 0, goal = 650, level = 1, levelDis = 1;
 let timeLeft = 60, stick = 0, minerStrength = BASE_STRENGTH;
-let strengthBoost = 0; // one-level +2 from 生力水
-let strengthFlag = 0; // bag power
+let strengthBoost = 0, strengthFlag = 0;
 let rockBonus = 0, diamondBonus = 0, cloverBonus = 0;
 let goalAddOn = 275;
 let items = [];
 let claw = {
-  angle: 0, dir: 1, state: 'swing', // swing | drop | pull
-  len: 28, caught: null, busy: 0,
+  swingFrame: 2, angleDeg: 0,
+  state: 'swing', // swing | drop | pull
+  len: LEN_MIN, caught: null, busy: 0,
+  price: 0, weight: 0, stickBonus: 0,
 };
 let floatTexts = [];
 let shopItems = [];
 let shopSel = -1;
 let resultOk = false;
 let lastTs = 0;
-let tickAcc = 0;
+let logicAcc = 0;
 let isTouch = matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window;
-let dynBtn = { x: W - 70, y: H - 70, r: 36 };
+let dynBtn = { x: W - 64, y: H - 64, r: 40 };
 let hintAlpha = 1;
+let minerPose = 'idle'; // idle | down | up | pull | throw
+let throwTimer = 0;
+let boomFx = null; // {x,y,life}
+let dropSfxCool = 0;
 
 function resetRun() {
   score = 0; level = 1; levelDis = 1;
@@ -165,7 +164,7 @@ function resetRun() {
   minerStrength = BASE_STRENGTH;
   strengthBoost = 0; strengthFlag = 0;
   rockBonus = 0; diamondBonus = 0; cloverBonus = 0;
-  goalAddOn = 275; goal = 375 + goalAddOn; // 650
+  goalAddOn = 275; goal = 375 + goalAddOn;
   startLevel();
 }
 
@@ -185,7 +184,7 @@ function weightOf(def) {
     if (w === 1) return (Math.random() * 9 | 0) + 1;
     if (w === 2) return -((Math.random() * 5 | 0) + 1);
     if (w === 3) return 9;
-    return -1;
+    return -1; // stickBonus fast pull
   }
   return def.weight;
 }
@@ -202,43 +201,52 @@ function rollBag() {
   return 800;
 }
 
+function pickLevelLayout(lv) {
+  const variants = [1, 2, 3].map(v => 'L' + lv + '_' + v).filter(k => window.GM_LEVELS && GM_LEVELS[k]);
+  if (!variants.length) return null;
+  return GM_LEVELS[variants[(Math.random() * variants.length) | 0]];
+}
+
 function startLevel() {
   mode = 'play';
   timeLeft = 60;
   strengthFlag = 0;
-  claw = { angle: 0, dir: 1, state: 'swing', len: 28, caught: null, busy: 0 };
+  claw = {
+    swingFrame: 2 + ((Math.random() * 80) | 0),
+    angleDeg: 0, state: 'swing', len: LEN_MIN,
+    caught: null, busy: 0, price: 0, weight: 0, stickBonus: 0,
+  };
+  claw.angleDeg = SWING[claw.swingFrame % SWING.length] || 0;
   floatTexts = [];
+  boomFx = null;
+  minerPose = 'idle';
+  throwTimer = 0;
+  hintAlpha = 1;
   items = [];
-  const names = poolForLevel(level);
-  const placed = [];
-  for (const name of names) {
-    const def = ITEM_DEFS[name];
-    if (!def) continue;
-    let x, y, ok = false;
-    for (let t = 0; t < 40; t++) {
-      x = 40 + Math.random() * (W - 80);
-      y = 130 + Math.random() * (H - 170);
-      ok = placed.every(p => Math.hypot(p.x - x, p.y - y) > (p.r + def.r) * 0.85);
-      if (ok) break;
+  const layout = pickLevelLayout(level);
+  if (layout) {
+    for (const spot of layout) {
+      const def = ITEM_DEFS[spot.key];
+      if (!def) continue;
+      const sc = (spot.sx + spot.sy) / 2;
+      items.push({
+        x: spot.x, y: spot.y,
+        r: def.r * sc,
+        sx: spot.sx, sy: spot.sy,
+        key: def.key, def,
+        price: priceOf(def), weight: weightOf(def),
+        alive: true, object: def.object,
+      });
     }
-    const it = {
-      x, y, r: def.r, key: def.key, def,
-      price: priceOf(def), weight: weightOf(def),
-      alive: true, object: def.object,
-    };
-    items.push(it);
-    placed.push(it);
   }
-  playSfx('sfx4');
+  playSfx('level', 0.45);
 }
 
 function clawTip() {
-  const a = claw.angle + Math.PI / 2; // 0 = down
-  // angle 0 = straight down; negative = left, positive = right
-  const ang = claw.angle; // from vertical
+  const rad = claw.angleDeg * Math.PI / 180;
   return {
-    x: PIVOT.x + Math.sin(ang) * claw.len,
-    y: PIVOT.y + Math.cos(ang) * claw.len,
+    x: PIVOT.x + Math.sin(rad) * claw.len,
+    y: PIVOT.y + Math.cos(rad) * claw.len,
   };
 }
 
@@ -246,7 +254,9 @@ function dropClaw() {
   if (mode !== 'play' || claw.state !== 'swing') return;
   claw.state = 'drop';
   claw.busy = 0;
-  playSfx('sfx5');
+  minerPose = 'down';
+  playSfx('drop', 0.4);
+  dropSfxCool = 0.12;
   hintAlpha = 0;
 }
 
@@ -254,19 +264,17 @@ function useDynamite() {
   if (mode !== 'play' || stick < 1) return;
   if (claw.state !== 'pull' || !claw.caught) return;
   stick--;
-  const it = claw.caught;
-  it.alive = false;
+  const tip = clawTip();
+  boomFx = { x: tip.x, y: tip.y, life: 0.45 };
+  claw.caught.alive = false;
   claw.caught = null;
   claw.price = 0;
-  // explode nearby
-  const tip = clawTip();
-  for (const o of items) {
-    if (!o.alive) continue;
-    if (Math.hypot(o.x - tip.x, o.y - tip.y) < 55) o.alive = false;
-  }
-  playSfx('sfx8');
-  // fast return
+  claw.weight = 0;
   claw.stickBonus = 1;
+  minerPose = 'throw';
+  throwTimer = 0.45;
+  playSfx('throw', 0.5);
+  playSfx('boom', 0.7);
 }
 
 function grabItem(it) {
@@ -278,72 +286,69 @@ function grabItem(it) {
   claw.stickBonus = (it.weight === -1) ? 1 : 0;
   if (it.weight === -1) claw.weight = 0;
   it.alive = false;
-  playSfx('sfx6');
+  minerPose = 'up';
+  playSfx('hit', 0.5);
+  playSfx('grab', 0.35);
 }
 
 function finishPull() {
   const price = claw.price;
   claw.state = 'swing';
-  claw.len = 28;
+  claw.len = LEN_MIN;
   claw.caught = null;
   claw.busy = 0;
   claw.stickBonus = 0;
+  minerPose = 'idle';
   if (price === 'power') {
     strengthFlag = 1;
-    floatTexts.push({ x: PIVOT.x, y: PIVOT.y + 40, t: '力气↑', life: 1.2 });
-    playSfx('sfx9');
+    floatTexts.push({ x: PIVOT.x, y: PIVOT.y + 36, t: '力气↑', life: 1.2 });
+    playSfx('score');
   } else if (price === 'dynamite') {
     stick++;
-    floatTexts.push({ x: PIVOT.x, y: PIVOT.y + 40, t: '炸药+1', life: 1.2 });
-    playSfx('sfx9');
+    floatTexts.push({ x: PIVOT.x, y: PIVOT.y + 36, t: '炸药+1', life: 1.2 });
+    playSfx('score');
   } else if (typeof price === 'number' && price > 0) {
     score += price;
-    floatTexts.push({ x: PIVOT.x, y: PIVOT.y + 40, t: '$' + price, life: 1.2 });
-    playSfx('sfx3');
+    floatTexts.push({ x: PIVOT.x, y: PIVOT.y + 36, t: '$' + price, life: 1.2 });
+    playSfx('money');
+    playSfx('score', 0.4);
   } else {
-    playSfx('sfx7');
+    playSfx('click', 0.35);
   }
 }
 
 function endLevel() {
-  // clear per-level shop bonuses as frame_130
   strengthFlag = 0;
   rockBonus = 0; diamondBonus = 0; cloverBonus = 0;
   strengthBoost = 0;
   minerStrength = BASE_STRENGTH;
   resultOk = score >= goal;
   mode = 'result';
-  playSfx(resultOk ? 'sfx1' : 'sfx2');
+  playSfx(resultOk ? 'win' : 'tick');
 }
 
 function buildShop() {
   shopItems = [];
-  // 炸药
   if (stick < 5) {
     const price = (Math.random() * 300 | 0) + 1 + level * 2;
     shopItems.push({ id: 'dyn', name: '炸药', desc: '抓到重物时可按↑炸掉，节省时间。', price, buy() { stick++; } });
   }
-  // 生力水 ~50%
   if ((Math.random() * 10 | 0) + 1 < 5) {
     const price = (Math.random() * (level * 50) | 0) + 1 + level * 2;
     shopItems.push({ id: 'str', name: '生力水', desc: '下一关力气+2，拉得更快。', price, buy() { strengthBoost = 2; } });
   }
-  // 幸运草 ~40%
   if ((Math.random() * 10 | 0) + 1 < 6) {
     const price = (Math.random() * (level * 100) | 0) + 1 + 200;
     shopItems.push({ id: 'clover', name: '幸运草', desc: '下一关从色袋中更容易开到好东西。', price, buy() { cloverBonus = 1; } });
   }
-  // 石头书
   if ((Math.random() * 10 | 0) + 1 < 5) {
     const price = (Math.random() * 300 | 0) + 100;
     shopItems.push({ id: 'rock', name: '石头收藏书', desc: '下一关石头更值钱。', price, buy() { rockBonus = 1; } });
   }
-  // 优质钻石
   if ((Math.random() * 10 | 0) + 1 >= 7) {
     const price = (Math.random() * 150 | 0) + 1;
     shopItems.push({ id: 'dia', name: '优质钻石', desc: '下一关钻石相当值钱。', price, buy() { diamondBonus = 1; } });
   }
-  // shuffle take up to 4
   shopItems.sort(() => Math.random() - 0.5);
   shopItems = shopItems.slice(0, 4);
   shopSel = -1;
@@ -355,133 +360,92 @@ function nextLevel() {
   goal += goalAddOn;
   levelDis += 1;
   level += 1;
-  if (level > 10) {
-    mode = 'win';
-    return;
-  }
+  if (level > 10) { mode = 'win'; return; }
   startLevel();
 }
 
-// ----- Update -----
-function update(dt) {
-  if (mode === 'play') {
-    tickAcc += dt;
-    while (tickAcc >= 1) {
-      tickAcc -= 1;
-      timeLeft -= 1;
-      if (timeLeft <= 0) {
-        timeLeft = 0;
-        if (claw.state === 'swing') endLevel();
-      }
-    }
-    if (claw.state === 'swing') {
-      claw.angle += claw.dir * SWING_SPEED * dt;
-      if (claw.angle > SWING_MAX) { claw.angle = SWING_MAX; claw.dir = -1; }
-      if (claw.angle < -SWING_MAX) { claw.angle = -SWING_MAX; claw.dir = 1; }
-    } else if (claw.state === 'drop') {
-      claw.len += DROP_SPEED * dt;
-      const tip = clawTip();
-      // hit floor / sides
-      if (tip.y > H - 8 || tip.x < 8 || tip.x > W - 8) {
-        claw.state = 'pull';
-        claw.caught = null;
-        claw.price = 0;
-        claw.weight = 0;
-        claw.stickBonus = 1;
-      } else {
-        for (const it of items) {
-          if (!it.alive) continue;
-          // point-ish hitTest on item body (not padding)
-          if (Math.hypot(it.x - tip.x, it.y - tip.y) < it.r * 0.72) {
-            if (it.def.tnt) {
-              // grab TNT then it just pays $1 (SWF); optional blast on dynamite only
-              grabItem(it);
-            } else {
-              grabItem(it);
-            }
-            break;
-          }
+// ----- Fixed 18fps logic step (matches SWF timeline) -----
+function logicStep() {
+  const dt = 1 / FPS;
+  if (mode !== 'play') {
+    if (throwTimer > 0) throwTimer -= dt;
+    if (boomFx) { boomFx.life -= dt; if (boomFx.life <= 0) boomFx = null; }
+    return;
+  }
+
+  if (throwTimer > 0) {
+    throwTimer -= dt;
+    if (throwTimer <= 0 && claw.state === 'pull') minerPose = 'up';
+  }
+  if (boomFx) { boomFx.life -= dt; if (boomFx.life <= 0) boomFx = null; }
+  if (dropSfxCool > 0) dropSfxCool -= dt;
+
+  // timer ~1s per SWF sprite 188 tick
+  timeLeft -= dt;
+  if (timeLeft <= 0) {
+    timeLeft = 0;
+    if (claw.state === 'swing') endLevel();
+  }
+
+  if (claw.state === 'swing') {
+    claw.swingFrame = (claw.swingFrame + 1) % SWING.length;
+    claw.angleDeg = SWING[claw.swingFrame];
+    minerPose = 'idle';
+  } else if (claw.state === 'drop') {
+    claw.len += DROP_PX_PER_FRAME;
+    const tip = clawTip();
+    if (dropSfxCool <= 0) { playSfx('drop', 0.15); dropSfxCool = 0.2; }
+    if (tip.y > H - 6 || tip.x < 6 || tip.x > W - 6 || claw.len >= LEN_MAX) {
+      claw.state = 'pull';
+      claw.caught = null;
+      claw.price = 0;
+      claw.weight = 0;
+      claw.stickBonus = 1; // empty return is fast (SWF stickBonus path)
+      minerPose = 'up';
+    } else {
+      // hitTest tip vs item body (SWF: claw.box hitTests T.ob.box)
+      for (const it of items) {
+        if (!it.alive) continue;
+        const hr = Math.max(6, it.r * 0.62);
+        if (Math.hypot(it.x - tip.x, it.y - tip.y) < hr) {
+          grabItem(it);
+          break;
         }
       }
-    } else if (claw.state === 'pull') {
-      let step;
-      if (claw.stickBonus || strengthFlag) step = 15 * 18; // frames→px approx
-      else {
-        const w = claw.weight || 0;
-        const s = Math.max(1, effectiveStrength() - w);
-        step = s * 18; // px/s scaled from frame skip at 18fps
-      }
-      // map frame advance to length reduce: full rope ~320px
-      claw.len -= (step / 18) * 12 * dt;
-      if (claw.caught) {
-        const tip = clawTip();
-        claw.caught.x = tip.x;
-        claw.caught.y = tip.y + claw.caught.r * 0.3;
-      }
-      if (claw.len <= 28) {
-        claw.len = 28;
-        finishPull();
-        if (timeLeft <= 0) endLevel();
-      }
     }
-    hintAlpha = Math.max(0, hintAlpha - dt * 0.25);
+  } else if (claw.state === 'pull') {
+    let step;
+    if (claw.stickBonus || strengthFlag) step = 15;
+    else step = Math.max(1, effectiveStrength() - (claw.weight || 0));
+    claw.len -= step * PULL_PX_PER_FRAME;
+    if (claw.caught) {
+      const tip = clawTip();
+      claw.caught.x = tip.x;
+      claw.caught.y = tip.y + Math.max(6, claw.caught.r * 0.25);
+    }
+    if (minerPose !== 'throw') minerPose = (claw.caught && (claw.weight || 0) >= 7) ? 'pull' : 'up';
+    if (claw.len <= LEN_MIN) {
+      claw.len = LEN_MIN;
+      finishPull();
+      if (timeLeft <= 0) endLevel();
+    }
+  }
+  hintAlpha = Math.max(0, hintAlpha - dt * 0.25);
+}
+
+function update(dt) {
+  logicAcc += dt;
+  const step = 1 / FPS;
+  let guard = 0;
+  while (logicAcc >= step && guard++ < 5) {
+    logicAcc -= step;
+    logicStep();
   }
   for (const f of floatTexts) f.life -= dt;
   floatTexts = floatTexts.filter(f => f.life > 0);
 }
 
 // ----- Draw -----
-function drawDirtBg() {
-  const g = ctx.createLinearGradient(0, 90, 0, H);
-  g.addColorStop(0, '#5a3a22');
-  g.addColorStop(0.35, '#4a2e18');
-  g.addColorStop(1, '#2a180c');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 95, W, H - 95);
-  // speckles
-  ctx.fillStyle = 'rgba(0,0,0,0.15)';
-  for (let i = 0; i < 40; i++) {
-    const x = (i * 97 + 13) % W;
-    const y = 110 + ((i * 53) % (H - 120));
-    ctx.fillRect(x, y, 3, 2);
-  }
-  // surface
-  ctx.fillStyle = '#3d7a2a';
-  ctx.fillRect(0, 88, W, 12);
-  ctx.fillStyle = '#6bb344';
-  ctx.fillRect(0, 88, W, 5);
-  // sky panel behind miner
-  ctx.fillStyle = '#87b7e0';
-  ctx.fillRect(0, 0, W, 90);
-}
-
-function drawHUD() {
-  ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  roundRect(8, 8, 150, 70, 8);
-  ctx.fill();
-  ctx.fillStyle = '#ffe9a0';
-  ctx.font = 'bold 14px sans-serif';
-  ctx.fillText('金钱 $' + score, 18, 28);
-  ctx.fillText('目标 $' + goal, 18, 48);
-  ctx.fillText('关卡 ' + levelDis, 18, 68);
-
-  ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  roundRect(W - 120, 8, 112, 50, 8);
-  ctx.fill();
-  ctx.fillStyle = timeLeft <= 10 ? '#ff6b6b' : '#ffe9a0';
-  ctx.font = 'bold 16px sans-serif';
-  ctx.fillText('时间 ' + timeLeft, W - 108, 38);
-
-  if (stick > 0) {
-    ctx.fillStyle = 'rgba(0,0,0,0.45)';
-    roundRect(W - 120, 62, 112, 28, 8);
-    ctx.fill();
-    ctx.fillStyle = '#ffb347';
-    ctx.font = '13px sans-serif';
-    ctx.fillText('炸药 ×' + stick, W - 108, 82);
-  }
-}
-
 function roundRect(x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -492,48 +456,123 @@ function roundRect(x, y, w, h, r) {
   ctx.closePath();
 }
 
-function drawMiner() {
-  const im = (claw.state === 'pull') ? images.minerPull : images.minerIdle;
-  if (im) {
-    const mw = 110, mh = mw * im.height / im.width;
-    ctx.drawImage(im, PIVOT.x - mw / 2, 8, mw, mh);
-  } else {
-    ctx.fillStyle = '#c4a070';
-    ctx.fillRect(PIVOT.x - 30, 20, 60, 50);
+function drawPlayBg() {
+  if (images.playBg) ctx.drawImage(images.playBg, 0, 0, W, H);
+  else {
+    ctx.fillStyle = '#87b7e0'; ctx.fillRect(0, 0, W, 95);
+    ctx.fillStyle = '#4a2e18'; ctx.fillRect(0, 95, W, H - 95);
+    ctx.fillStyle = '#3d7a2a'; ctx.fillRect(0, 88, W, 12);
   }
+}
+
+function drawHUD() {
+  if (images.hudPanel) {
+    ctx.drawImage(images.hudPanel, 8, 6, 150, 72);
+    ctx.drawImage(images.hudPanel, W - 118, 6, 110, 48);
+  } else {
+    ctx.fillStyle = 'rgba(12,20,40,0.72)';
+    roundRect(8, 6, 150, 72, 8); ctx.fill();
+    ctx.strokeStyle = '#e0b84a'; ctx.lineWidth = 1.5; ctx.stroke();
+    roundRect(W - 118, 6, 110, 48, 8); ctx.fill(); ctx.stroke();
+  }
+  ctx.fillStyle = '#ffe9a0';
+  ctx.font = 'bold 14px "Microsoft YaHei",sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('金钱 $' + score, 18, 28);
+  ctx.fillText('目标 $' + goal, 18, 48);
+  ctx.fillText('关卡 ' + levelDis, 18, 68);
+  ctx.fillStyle = timeLeft <= 10 ? '#ff6b6b' : '#ffe9a0';
+  ctx.font = 'bold 16px "Microsoft YaHei",sans-serif';
+  ctx.fillText('时间 ' + Math.ceil(timeLeft), W - 106, 36);
+
+  if (stick > 0) {
+    ctx.fillStyle = 'rgba(12,20,40,0.72)';
+    roundRect(W - 118, 58, 110, 26, 8); ctx.fill();
+    ctx.strokeStyle = '#e0b84a'; ctx.stroke();
+    ctx.fillStyle = '#ffb347';
+    ctx.font = '13px "Microsoft YaHei",sans-serif';
+    ctx.fillText('炸药 ×' + stick, W - 106, 76);
+  }
+}
+
+function drawMiner() {
+  let key = 'minerIdle';
+  if (minerPose === 'down') key = 'minerDown';
+  else if (minerPose === 'up') key = 'minerUp';
+  else if (minerPose === 'pull') key = 'minerPull';
+  else if (minerPose === 'throw') {
+    const t = throwTimer;
+    key = t > 0.3 ? 'minerThrow1' : t > 0.15 ? 'minerThrow2' : 'minerThrow3';
+  }
+  const im = images[key] || images.minerIdle || images.minerPull;
+  if (!im) return;
+  // SWF miner placed at scale ~0.389 of 166×150 ≈ 64×58, but art looks larger in practice
+  const mw = 96;
+  const mh = mw * im.height / im.width;
+  ctx.drawImage(im, MINER_POS.x - mw / 2, 6, mw, mh);
 }
 
 function drawClaw() {
   const tip = clawTip();
-  ctx.strokeStyle = '#222';
-  ctx.lineWidth = 2;
+  // rope
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 2.2;
+  ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.moveTo(PIVOT.x, PIVOT.y);
   ctx.lineTo(tip.x, tip.y);
   ctx.stroke();
-  // hook
+  // thin highlight
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(PIVOT.x + 0.6, PIVOT.y);
+  ctx.lineTo(tip.x + 0.6, tip.y);
+  ctx.stroke();
+
+  // hook sprite
+  let hk = images.hookOpen;
+  if (claw.state === 'pull' && claw.caught) hk = images.hookGrab || images.hookClosed;
+  else if (claw.state === 'pull') hk = images.hookClosed || images.hookGrab;
+  else if (claw.state === 'drop') hk = images.hookOpen;
   ctx.save();
   ctx.translate(tip.x, tip.y);
-  ctx.rotate(claw.angle);
-  ctx.fillStyle = '#c0c4c8';
-  ctx.strokeStyle = '#333';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.arc(0, 4, 7, -0.2, Math.PI + 0.2);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(-6, 4); ctx.lineTo(-10, 14); ctx.lineTo(-2, 10);
-  ctx.moveTo(6, 4); ctx.lineTo(10, 14); ctx.lineTo(2, 10);
-  ctx.stroke();
+  ctx.rotate(claw.angleDeg * Math.PI / 180);
+  if (hk) {
+    const s = 36;
+    ctx.drawImage(hk, -s / 2, -4, s, s);
+  } else {
+    ctx.strokeStyle = '#c8ccd0';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-7, 2); ctx.quadraticCurveTo(-12, 16, -2, 18);
+    ctx.moveTo(0, 2); ctx.lineTo(0, 18);
+    ctx.moveTo(7, 2); ctx.quadraticCurveTo(12, 16, 2, 18);
+    ctx.stroke();
+  }
   ctx.restore();
 
   if (claw.caught) {
     const it = claw.caught;
     const im = images[it.key];
     if (im) {
-      const s = it.r * 2.2;
-      ctx.drawImage(im, tip.x - s / 2, tip.y + 4, s, s * im.height / im.width);
+      const s = it.r * 2.15;
+      ctx.drawImage(im, tip.x - s / 2, tip.y + 2, s, s * im.height / im.width);
     }
+  }
+
+  if (boomFx) {
+    const a = Math.max(0, boomFx.life / 0.45);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = '#ff8844';
+    ctx.beginPath();
+    ctx.arc(boomFx.x, boomFx.y, 18 + (1 - a) * 40, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffe66d';
+    ctx.beginPath();
+    ctx.arc(boomFx.x, boomFx.y, 8 + (1 - a) * 18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -542,7 +581,7 @@ function drawItems() {
     if (!it.alive) continue;
     const im = images[it.key];
     if (im) {
-      const s = it.r * 2.2;
+      const s = it.r * 2.15;
       ctx.drawImage(im, it.x - s / 2, it.y - s / 2, s, s * (im.height / im.width));
     } else {
       ctx.fillStyle = '#daa520';
@@ -576,30 +615,29 @@ function drawShop() {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
   if (images.shopkeeper) ctx.drawImage(images.shopkeeper, 0, 40, W, H - 40);
-  ctx.fillStyle = 'rgba(0,0,0,0.65)';
-  roundRect(16, 16, W - 32, 100, 10); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  roundRect(16, 12, W - 32, 96, 10); ctx.fill();
+  ctx.strokeStyle = '#e0b84a'; ctx.lineWidth = 1.5; ctx.stroke();
   ctx.fillStyle = '#ffe9a0';
-  ctx.font = 'bold 18px sans-serif';
-  ctx.fillText('商店 — 金钱 $' + score + '　已达目标可进下一关', 28, 42);
-  ctx.font = '13px sans-serif';
+  ctx.font = 'bold 18px "Microsoft YaHei",sans-serif';
+  ctx.fillText('商店 — 金钱 $' + score, 28, 40);
+  ctx.font = '13px "Microsoft YaHei",sans-serif';
   ctx.fillStyle = '#ddd';
   const sel = shopItems[shopSel];
-  ctx.fillText(sel ? (sel.name + '：$'+sel.price+' — '+sel.desc) : '点击商品购买，或点「下一关」', 28, 68);
-  ctx.fillText('炸药持有：' + stick, 28, 92);
+  ctx.fillText(sel ? (sel.name + '：$' + sel.price + ' — ' + sel.desc) : '点击商品购买，或点「下一关」', 28, 64);
+  ctx.fillText('炸药持有：' + stick, 28, 88);
 
   shopItems.forEach((it, i) => {
-    const x = 24 + i * 100;
-    const y = H - 120;
+    const x = 24 + i * 100, y = H - 120;
     ctx.fillStyle = score >= it.price ? '#5a4020' : '#333';
     roundRect(x, y, 90, 70, 8); ctx.fill();
     ctx.strokeStyle = '#f5d76e'; ctx.stroke();
     ctx.fillStyle = '#ffe9a0';
-    ctx.font = 'bold 13px sans-serif';
+    ctx.font = 'bold 13px "Microsoft YaHei",sans-serif';
     ctx.fillText(it.name, x + 10, y + 28);
     ctx.fillText('$' + it.price, x + 10, y + 52);
   });
 
-  // next level button
   ctx.fillStyle = '#2e8b57';
   roundRect(W - 120, 20, 100, 36, 8); ctx.fill();
   ctx.fillStyle = '#fff';
@@ -614,7 +652,7 @@ function drawResult() {
   roundRect(80, 100, W - 160, 200, 12); ctx.fill();
   ctx.strokeStyle = '#f5d76e'; ctx.lineWidth = 2; ctx.stroke();
   ctx.fillStyle = '#ffe9a0';
-  ctx.font = 'bold 28px sans-serif';
+  ctx.font = 'bold 28px "Microsoft YaHei",sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText(resultOk ? '过关！' : '未达到目标', W / 2, 150);
   ctx.font = '18px sans-serif';
@@ -644,15 +682,15 @@ function drawWin() {
 
 function drawTouchControls() {
   if (!isTouch || mode !== 'play') return;
-  // dynamite button
   ctx.beginPath();
   ctx.arc(dynBtn.x, dynBtn.y, dynBtn.r, 0, Math.PI * 2);
-  ctx.fillStyle = stick > 0 ? 'rgba(220,80,40,0.45)' : 'rgba(80,80,80,0.35)';
+  ctx.fillStyle = stick > 0 ? 'rgba(220,80,40,0.5)' : 'rgba(80,80,80,0.35)';
   ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = 2;
   ctx.stroke();
   ctx.fillStyle = '#fff';
-  ctx.font = 'bold 12px sans-serif';
+  ctx.font = 'bold 13px sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText('炸药', dynBtn.x, dynBtn.y - 4);
   ctx.fillText(String(stick), dynBtn.x, dynBtn.y + 14);
@@ -670,11 +708,15 @@ function drawTouchControls() {
 
 function drawFloats() {
   for (const f of floatTexts) {
-    ctx.globalAlpha = Math.max(0, f.life);
+    ctx.globalAlpha = Math.max(0, Math.min(1, f.life));
     ctx.fillStyle = '#ffe66d';
-    ctx.font = 'bold 20px sans-serif';
+    ctx.font = 'bold 22px "Microsoft YaHei",sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(f.t, f.x, f.y - (1.2 - f.life) * 30);
+    ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+    ctx.lineWidth = 3;
+    const y = f.y - (1.2 - f.life) * 34;
+    ctx.strokeText(f.t, f.x, y);
+    ctx.fillText(f.t, f.x, y);
     ctx.textAlign = 'left';
     ctx.globalAlpha = 1;
   }
@@ -683,10 +725,10 @@ function drawFloats() {
 function render() {
   if (mode === 'title') drawTitle();
   else if (mode === 'shop') drawShop();
-  else if (mode === 'result') { drawDirtBg(); drawMiner(); drawHUD(); drawResult(); }
+  else if (mode === 'result') { drawPlayBg(); drawMiner(); drawHUD(); drawResult(); }
   else if (mode === 'win') drawWin();
   else {
-    drawDirtBg();
+    drawPlayBg();
     drawItems();
     drawClaw();
     drawMiner();
@@ -710,10 +752,8 @@ function onPointer(e) {
   ensureAudio();
   const p = canvasPos(e);
   if (mode === 'title') {
-    // start nugget area
     if (p.x > 40 && p.x < 300 && p.y > 40 && p.y < 280) {
       resetRun();
-      playSfx('sfx4');
     }
     return;
   }
@@ -738,7 +778,7 @@ function onPointer(e) {
           score -= it.price;
           it.buy();
           shopItems.splice(i, 1);
-          playSfx('sfx3');
+          playSfx('money');
         }
       }
     });
@@ -760,35 +800,42 @@ addEventListener('keydown', (e) => {
   ensureAudio();
   if (e.code === 'ArrowDown' || e.code === 'Space') { e.preventDefault(); dropClaw(); }
   if (e.code === 'ArrowUp' || e.code === 'KeyD') { e.preventDefault(); useDynamite(); }
+  // ←/→ force pull-up like SWF
+  if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight') && claw.state === 'drop') {
+    e.preventDefault();
+    claw.state = 'pull';
+    claw.caught = null;
+    claw.price = 0;
+    claw.weight = 0;
+    claw.stickBonus = 1;
+    minerPose = 'up';
+  }
   if (e.code === 'Enter' && mode === 'title') resetRun();
 });
 
-// ----- Loop -----
 function frame(ts) {
   if (!lastTs) lastTs = ts;
   let dt = (ts - lastTs) / 1000;
   lastTs = ts;
-  if (dt > 0.05) dt = 0.05;
+  if (dt > 0.08) dt = 0.08;
   update(dt);
   render();
   requestAnimationFrame(frame);
 }
 
-// ----- Boot -----
 (async function boot() {
   try {
     let done = 0;
-    const total = TITLE_PACK.length + 2;
+    const total = TITLE_PACK.length + PLAY_PACK.length + SFX_NAMES.length;
     for (const [k, u] of TITLE_PACK) {
       await loadImage(k, u);
-      done++; setLoad(done / (TITLE_PACK.length + PLAY_PACK.length + 3));
+      done++; setLoad(done / total);
     }
     document.getElementById('load').classList.add('hide');
     requestAnimationFrame(frame);
-    // play pack + sfx in background
     for (const [k, u] of PLAY_PACK) {
-      await loadImage(k, u);
-      done++; setLoad(Math.min(0.95, done / (TITLE_PACK.length + PLAY_PACK.length)));
+      try { await loadImage(k, u); } catch (e) { console.warn(e); }
+      done++; setLoad(Math.min(0.95, done / total));
     }
     ensureAudio();
     await Promise.all(SFX_NAMES.map(loadSfx));
@@ -798,3 +845,5 @@ function frame(ts) {
     document.getElementById('pct').textContent = '加载出错，请刷新';
   }
 })();
+
+window.__GM = { resetRun, dropClaw, useDynamite, get mode(){return mode}, get items(){return items}, get claw(){return claw} };
