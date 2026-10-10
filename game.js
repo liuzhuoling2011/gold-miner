@@ -4,7 +4,7 @@
  * Physics/layouts/SFX from original SWF (CWS v6, 550×400 @18fps)
  */
 const W = 550, H = 400, FPS = 18;
-const ASSET_VER = '8';
+const ASSET_VER = '9';
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
@@ -94,6 +94,10 @@ for (const k of ['gold_s','gold_m','gold_l','gold_xl','rock_m','rock_l','diamond
   if (base) PLAY_PACK_2X.push([k, base[1].replace('.webp', '@2x.webp')]);
 }
 
+const TITLE_PACK_3X = TITLE_PACK_2X.map(([k, u]) => [k, u.replace('@2x.webp', '@3x.webp')]);
+const PLAY_PACK_3X = PLAY_PACK_2X.map(([k, u]) => [k, u.replace('@2x.webp', '@3x.webp')]);
+
+
 
 function loadImage(key, url) {
   return new Promise((res, rej) => {
@@ -103,12 +107,14 @@ function loadImage(key, url) {
     im.src = url + (url.includes('?') ? '&' : '?') + 'v=' + ASSET_VER;
   });
 }
-async function loadPack(pack, pack2x, onProgress) {
+async function loadPack(pack, pack2x, onProgress, pack3x) {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
-  const use2x = dpr >= 1.5 && pack2x;
   const byKey = new Map(pack);
-  if (use2x) {
+  if (dpr >= 1.5 && pack2x) {
     for (const [k, u] of pack2x) byKey.set(k, u);
+  }
+  if (dpr >= 2.5 && pack3x) {
+    for (const [k, u] of pack3x) byKey.set(k, u);
   }
   const merged = [...byKey.entries()];
   let i = 0;
@@ -116,11 +122,17 @@ async function loadPack(pack, pack2x, onProgress) {
     try {
       await loadImage(k, u);
     } catch (e) {
-      // fall back to 1x if @2x missing
+      // fall back: @3x → @2x → 1x
+      const two = pack2x && pack2x.find(p => p[0] === k);
       const one = pack.find(p => p[0] === k);
-      if (one && one[1] !== u) {
-        try { await loadImage(k, one[1]); } catch (e2) { console.warn(e2); }
-      } else console.warn(e);
+      let ok = false;
+      if (two && two[1] !== u) {
+        try { await loadImage(k, two[1]); ok = true; } catch (e2) {}
+      }
+      if (!ok && one && one[1] !== u) {
+        try { await loadImage(k, one[1]); ok = true; } catch (e2) { console.warn(e2); }
+      }
+      if (!ok) console.warn(e);
     }
     i++;
     if (onProgress) onProgress(i / merged.length);
@@ -790,7 +802,15 @@ function drawClaw() {
   ctx.lineTo(tip.x + 0.5, tip.y);
   ctx.stroke();
 
-  // Original claw: DefineSprite_281 — open frame1, grabbed = gotoAndStop(object)
+  // Claw + caught item. Grab composites scaled to the SAME world size as drawItems
+  // so rocks/gold never shrink when latched (no accidental sx/sy mismatch).
+  function itemWorldSize(it) {
+    const im = images[it.key];
+    const w = Math.max(8, (it.r || 10) * 2.15);
+    const h = im ? w * (im.height / im.width) : w;
+    return { w, h };
+  }
+
   let hk = images.hookOpen;
   let nw = HOOK_OPEN_NATIVE.w, nh = HOOK_OPEN_NATIVE.h;
   let drewGrab = false;
@@ -800,7 +820,11 @@ function drawClaw() {
     if (grab) {
       hk = grab;
       const nat = HOOK_GRAB_NATIVE[oid] || HOOK_OPEN_NATIVE;
-      nw = nat.w; nh = nat.h;
+      const world = itemWorldSize(claw.caught);
+      // Match grab frame width to world item width (spot.sx already baked into it.r)
+      const scale = world.w / Math.max(1, nat.w);
+      nw = nat.w * scale;
+      nh = nat.h * scale;
       drewGrab = true;
     } else {
       hk = images.hookClosed || images.hookOpen;
@@ -814,7 +838,7 @@ function drawClaw() {
   // Same clockwise angle as Flash _rotation / clawTip()
   ctx.rotate(claw.angleDeg * Math.PI / 180);
   if (hk) {
-    // hinge at top-center (rope end); native SWF pixel size
+    // hinge at top-center (rope end)
     ctx.drawImage(hk, -nw / 2, 0, nw, nh);
   } else {
     ctx.strokeStyle = '#9aa0a6';
@@ -826,13 +850,13 @@ function drawClaw() {
   }
   ctx.restore();
 
-  // Fallback: draw item under claw if no composite grab frame
+  // Fallback: draw item under claw at exact world size if no composite grab frame
   if (claw.caught && !drewGrab) {
     const it = claw.caught;
     const im = images[it.key];
     if (im) {
-      const s = it.r * 2.15;
-      ctx.drawImage(im, tip.x - s / 2, tip.y + 4, s, s * im.height / im.width);
+      const { w: s, h: ih } = itemWorldSize(it);
+      ctx.drawImage(im, tip.x - s / 2, tip.y + 4, s, ih);
     }
   }
 
@@ -1193,11 +1217,15 @@ function frame(ts) {
   try {
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     const use2x = dpr >= 1.5;
+    const use3x = dpr >= 2.5;
     // Phase 1: title only → playable shell
-    const titleList = use2x ? TITLE_PACK_2X : TITLE_PACK;
+    const titleList = use3x ? TITLE_PACK_3X : (use2x ? TITLE_PACK_2X : TITLE_PACK);
     for (const [k, u] of titleList) {
       try { await loadImage(k, u); } catch (e) {
-        if (use2x) await loadImage(k, TITLE_PACK[0][1]);
+        try { if (use3x) await loadImage(k, TITLE_PACK_2X[0][1]);
+        else if (use2x) await loadImage(k, TITLE_PACK[0][1]); } catch (e2) {
+          await loadImage(k, TITLE_PACK[0][1]);
+        }
       }
     }
     setLoad(0.12);
@@ -1216,11 +1244,11 @@ function frame(ts) {
     await loadPack(phase2, use2x ? PLAY_PACK_2X : null, (p) => {
       done = Math.floor(p * phase2.length);
       setLoad(0.12 + 0.55 * (done / Math.max(1, phase2.length)));
-    });
+    }, use3x ? PLAY_PACK_3X : null);
     // Phase 3: pull animation frames + remaining
     await loadPack(phase3, use2x ? PLAY_PACK_2X : null, (p) => {
       setLoad(0.67 + 0.2 * p);
-    });
+    }, use3x ? PLAY_PACK_3X : null);
     ensureAudio();
     await Promise.all(SFX_NAMES.map(loadSfx));
     setLoad(1);
