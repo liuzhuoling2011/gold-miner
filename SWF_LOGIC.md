@@ -30,7 +30,12 @@ else frame += (minerStrength - weight);
 Base minerStrength=10; 生力水 shop: +2; bag "power": strength=1 for remainder of level.
 
 ## Hit test
-Claw tip hitTests `_root.T{n}.ob.box` while busy==0.
+Claw tip (DefineSprite_256 = shape40, ±6.2) hitTests `_root.T{n}.ob.box` while busy==0.
+Item box = shape40 × internal scale (e.g. gold 2.476, bag 3.25, tnt 4.1×5.1) × PlaceObject sx/sy.
+Remake: AABB tip vs (item + box offset).
+
+## Miner effort
+`miner.gotoAndStop("up")` → nested sprite 238 (37f winch loop). Heavy when weight>1 (slow pull); remake plays pant.mp3.
 
 ## Objects (object id → price, weight)
 | id | price | weight | art |
