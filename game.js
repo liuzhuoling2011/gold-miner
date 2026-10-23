@@ -4,7 +4,7 @@
  * Physics/layouts/SFX from original SWF (CWS v6, 550×400 @18fps)
  */
 const W = 550, H = 400, FPS = 18;
-const ASSET_VER = '16';
+const ASSET_VER = '17';
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
@@ -642,6 +642,167 @@ function startLevel() {
   playSfx('level', 0.45);
 }
 
+// ----- Pixel-shape collision (claw jaws vs item outline) -----
+// Both shapes are alpha masks of the art exactly as drawn. Grid = HIT_RES cells per stage px.
+const HIT_RES = 2;
+const HIT_ALPHA = 128;           // "visible" pixel threshold
+let showHitShapes = false;
+let clawHit = null;              // { pts: Float32Array local [x,y,...], rad, src, ov }
+const walkerMaskCache = new Map();
+let maskCv = null, maskCtx = null;
+
+function maskCanvas(w, h) {
+  if (!maskCv) {
+    maskCv = document.createElement('canvas');
+    maskCtx = maskCv.getContext('2d', { willReadFrequently: true });
+  }
+  if (maskCv.width < w) maskCv.width = w;
+  if (maskCv.height < h) maskCv.height = h;
+  maskCtx.setTransform(1, 0, 0, 1, 0, 0);
+  maskCtx.clearRect(0, 0, maskCv.width, maskCv.height);
+  return maskCtx;
+}
+/** Rasterize drawCb (stage-space drawing) inside [x0,y0,w,h] into a 0/1 mask. */
+function rasterMask(x0, y0, w, h, drawCb) {
+  x0 = Math.floor(x0 * HIT_RES) / HIT_RES; y0 = Math.floor(y0 * HIT_RES) / HIT_RES;
+  const cw = Math.max(1, Math.ceil((w + 1) * HIT_RES)), ch = Math.max(1, Math.ceil((h + 1) * HIT_RES));
+  const g = maskCanvas(cw, ch);
+  g.setTransform(HIT_RES, 0, 0, HIT_RES, -x0 * HIT_RES, -y0 * HIT_RES);
+  drawCb(g);
+  const px = g.getImageData(0, 0, cw, ch).data;
+  const data = new Uint8Array(cw * ch);
+  let n = 0;
+  for (let i = 0, j = 3; i < data.length; i++, j += 4) if (px[j] >= HIT_ALPHA) { data[i] = 1; n++; }
+  return { x0, y0, w: cw, h: ch, data, n };
+}
+function drawItemShape(g, it, im) {
+  const s = it.r * 2.15;
+  if (im) g.drawImage(im, it.x - s / 2, it.y - s / 2, s, s * (im.height / im.width));
+  else { g.fillStyle = '#000'; g.beginPath(); g.arc(it.x, it.y, it.r, 0, Math.PI * 2); g.fill(); }
+}
+/** Mask of a walker frame in body-local stage px (origin = body origin, see drawMouse). */
+function walkerMask(it) {
+  const dia = it.key === 'diamond_m';
+  const im = images[(dia ? 'mouseDia_' : 'mouse_') + (it.anim || 1)];
+  const kx = it.sx * OB_SCALE * (it.face || 1), ky = Math.abs(it.sy) * OB_SCALE;
+  const key = (dia ? 'd' : 'm') + (im ? it.anim : 's') + '|' + kx.toFixed(4) + '|' + ky.toFixed(4);
+  let m = walkerMaskCache.get(key);
+  if (m) return m;
+  if (im) {
+    const b = MOUSE_BOUNDS[dia ? 'mouseDia' : 'mouse'];
+    const xs = [b[0] * kx, (b[0] + b[2]) * kx], ys = [b[1] * ky, (b[1] + b[3]) * ky];
+    const x0 = Math.min(...xs), y0 = Math.min(...ys);
+    m = rasterMask(x0, y0, Math.abs(xs[1] - xs[0]), Math.abs(ys[1] - ys[0]), (g) => {
+      g.scale(kx, ky); g.drawImage(im, b[0], b[1], b[2], b[3]);
+    });
+  } else {
+    const st = images[it.key];
+    const w = 46, h = st ? w * st.height / st.width : 30;
+    m = rasterMask(-w / 2, -h / 2, w, h, (g) => {
+      if (st) g.drawImage(st, -w / 2, -h / 2, w, h); else g.fillRect(-w / 2, -h / 2, w, h);
+    });
+  }
+  walkerMaskCache.set(key, m);
+  return m;
+}
+/** World-space mask for an item: { m, ox, oy } (mask origin offset added to m.x0/y0). */
+function itemHitMask(it) {
+  if (it.walker) {
+    const kx = it.sx * OB_SCALE, ky = Math.abs(it.sy) * OB_SCALE;
+    return { m: walkerMask(it), ox: it.baseX + kx * it.walkX, oy: it.y + ky * MOUSE_Y };
+  }
+  const im = images[it.key] || null;
+  if (!it._mask || it._maskIm !== im || it._maskX !== it.x || it._maskY !== it.y) {
+    const s = it.r * 2.15, h = im ? s * im.height / im.width : s;
+    const x0 = im ? it.x - s / 2 : it.x - it.r, y0 = im ? it.y - s / 2 : it.y - it.r;
+    it._mask = rasterMask(x0, y0, im ? s : it.r * 2, im ? h : it.r * 2, (g) => drawItemShape(g, it, im));
+    it._maskIm = im; it._maskX = it.x; it._maskY = it.y;
+  }
+  return { m: it._mask, ox: 0, oy: 0 };
+}
+/** Solid pixels of the open claw (hookOpen as drawn in drawClaw), claw-local stage px. */
+function getClawHit() {
+  const im = images.hookOpen || null;
+  if (clawHit && clawHit.src === im) return clawHit;
+  const nw = HOOK_OPEN_NATIVE.w, nh = HOOK_OPEN_NATIVE.h, hy = HOOK_OPEN_HINGE;
+  const m = rasterMask(-nw / 2, -hy, nw, nh, (g) => {
+    if (im) g.drawImage(im, -nw / 2, -hy, nw, nh);
+    else g.fillRect(-TIP_HALF, -TIP_HALF, TIP_HALF * 2, TIP_HALF * 2);
+  });
+  const pts = [];
+  let rad = 0;
+  for (let j = 0; j < m.h; j++) for (let i = 0; i < m.w; i++) {
+    if (!m.data[j * m.w + i]) continue;
+    const x = m.x0 + (i + 0.5) / HIT_RES, y = m.y0 + (j + 0.5) / HIT_RES;
+    pts.push(x, y);
+    rad = Math.max(rad, Math.hypot(x, y));
+  }
+  clawHit = { pts: new Float32Array(pts), rad: rad + 1, src: im, m, ov: null };
+  return clawHit;
+}
+/** Number of open-claw pixels (at tip/angle) landing on the item's visible pixels. */
+function clawOverlap(it, tip, angleDeg, stopAtFirst) {
+  const ch = getClawHit();
+  const { m, ox, oy } = itemHitMask(it);
+  const mx0 = m.x0 + ox, my0 = m.y0 + oy;
+  const mx1 = mx0 + m.w / HIT_RES, my1 = my0 + m.h / HIT_RES;
+  if (tip.x + ch.rad < mx0 || tip.x - ch.rad > mx1 || tip.y + ch.rad < my0 || tip.y - ch.rad > my1) return 0;
+  const a = angleDeg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  const P = ch.pts, D = m.data, W = m.w, Hh = m.h;
+  let n = 0;
+  for (let k = 0; k < P.length; k += 2) {
+    const wx = tip.x + P[k] * c - P[k + 1] * s;
+    const wy = tip.y + P[k] * s + P[k + 1] * c;
+    const i = ((wx - mx0) * HIT_RES) | 0, j = ((wy - my0) * HIT_RES) | 0;
+    if (wx < mx0 || wy < my0 || i >= W || j >= Hh) continue;
+    if (D[j * W + i]) { n++; if (stopAtFirst) return n; }
+  }
+  return n;
+}
+/** First item touched by the open claw at (len, angle); closest to the hinge wins ties. */
+function clawHitAt(len, angleDeg) {
+  const rad = angleDeg * Math.PI / 180;
+  const tip = { x: PIVOT.x - Math.sin(rad) * len, y: PIVOT.y + Math.cos(rad) * len };
+  let best = null, bestD = Infinity;
+  for (const it of items) {
+    if (!it.alive || claw.caught === it) continue;
+    if (clawOverlap(it, tip, angleDeg, true)) {
+      const d = (it.x - tip.x) * (it.x - tip.x) + (it.y - tip.y) * (it.y - tip.y);
+      if (d < bestD) { bestD = d; best = it; }
+    }
+  }
+  return best;
+}
+function overlayCanvas(m, rgba) {
+  const cv = document.createElement('canvas');
+  cv.width = m.w; cv.height = m.h;
+  const g = cv.getContext('2d');
+  const id = g.createImageData(m.w, m.h);
+  for (let i = 0; i < m.data.length; i++) if (m.data[i]) id.data.set(rgba, i * 4);
+  g.putImageData(id, 0, 0);
+  return cv;
+}
+function drawHitShapes() {
+  if (!showHitShapes || mode !== 'play') return;
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  for (const it of items) {
+    if (!it.alive || claw.caught === it) continue;
+    const { m, ox, oy } = itemHitMask(it);
+    if (!m.ov) m.ov = overlayCanvas(m, [0, 255, 255, 120]);
+    ctx.drawImage(m.ov, m.x0 + ox, m.y0 + oy, m.w / HIT_RES, m.h / HIT_RES);
+  }
+  if (!claw.caught) {
+    const ch = getClawHit();
+    if (!ch.ov) ch.ov = overlayCanvas(ch.m, [255, 0, 80, 170]);
+    const tip = clawTip();
+    ctx.translate(tip.x, tip.y);
+    ctx.rotate(claw.angleDeg * Math.PI / 180);
+    ctx.drawImage(ch.ov, ch.m.x0, ch.m.y0, ch.m.w / HIT_RES, ch.m.h / HIT_RES);
+  }
+  ctx.restore();
+}
+
 function clawTip() {
   // Flash _rotation: +deg = clockwise. With Y-down, local +Y maps to (-sin, +cos).
   // Tip must use the same mapping so the rope ends where the claw hinge faces.
@@ -920,28 +1081,30 @@ function logicStep() {
     claw.angleDeg = SWING[claw.swingFrame];
     minerPose = 'idle';
   } else if (claw.state === 'drop') {
-    claw.len += DROP_PX_PER_FRAME;
+    // Sub-step ≤1 px along the rope so thin edges can't be tunnelled through.
+    const from = claw.len, to = claw.len + DROP_PX_PER_FRAME;
+    const steps = Math.ceil(DROP_PX_PER_FRAME / 1);
+    let hit = null;
+    for (let k = 1; k <= steps && !hit; k++) {
+      const L = from + (to - from) * k / steps;
+      if (L >= LEN_MAX) break;
+      const rr = claw.angleDeg * Math.PI / 180;
+      const ty = PIVOT.y + Math.cos(rr) * L, tx = PIVOT.x - Math.sin(rr) * L;
+      if (ty > H - 6 || tx < 6 || tx > W - 6) break;
+      hit = clawHitAt(L, claw.angleDeg);
+      if (hit) claw.len = L;
+    }
+    if (!hit) claw.len = to;
     const tip = clawTip();
-    if (tip.y > H - 6 || tip.x < 6 || tip.x > W - 6 || claw.len >= LEN_MAX) {
+    if (hit) {
+      grabItem(hit);
+    } else if (tip.y > H - 6 || tip.x < 6 || tip.x > W - 6 || claw.len >= LEN_MAX) {
       claw.state = 'pull';
       claw.caught = null;
       claw.price = 0;
       claw.weight = 0;
       claw.stickBonus = 1; // empty return is fast (SWF stickBonus path)
       minerPose = 'up';
-    } else {
-      // SWF: tip (shape40 ±6.2) hitTest item.ob.box AABB
-      for (const it of items) {
-        if (!it.alive) continue;
-        const cx = it.x + (it.boxOx || 0);
-        const cy = it.y + (it.boxOy || 0);
-        const hx = it.boxHx || Math.max(8, it.r * 0.7);
-        const hy = it.boxHy || Math.max(8, it.r * 0.7);
-        if (Math.abs(tip.x - cx) <= TIP_HALF + hx && Math.abs(tip.y - cy) <= TIP_HALF + hy) {
-          grabItem(it);
-          break;
-        }
-      }
     }
   } else if (claw.state === 'pull') {
     let step;
@@ -1439,6 +1602,7 @@ function render() {
     drawItems();
     drawExplosions();
     drawClaw();
+    drawHitShapes();
     drawMiner();
     drawHUD();
     drawFloats();
@@ -1531,6 +1695,15 @@ if (dbgLv) {
   });
   document.getElementById('dbgGo').addEventListener('click', () => { closeDebug(); debugJump(dbgPickLv, dbgPickVar); });
   document.getElementById('dbgClose').addEventListener('click', closeDebug);
+  const hitCb = document.getElementById('dbgHit');
+  if (hitCb) {
+    try { showHitShapes = localStorage.getItem('gm_hit') === '1'; } catch (e) {}
+    hitCb.checked = showHitShapes;
+    hitCb.addEventListener('change', () => {
+      showHitShapes = hitCb.checked;
+      try { localStorage.setItem('gm_hit', showHitShapes ? '1' : '0'); } catch (e) {}
+    });
+  }
   dbgModal.addEventListener('click', (e) => { if (e.target === dbgModal) closeDebug(); });
   dbgBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); });
   dbgBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); unlockAudio(); openDebug(); });
@@ -1705,4 +1878,4 @@ function frame(ts) {
 })();
 
 dbgBtnReady = true;
-window.__GM = { debugJump, goalForLevel, get explosions(){return explosions}, resetRun, dropClaw, useDynamite, layoutPads, detectTouchUI, get mode(){return mode}, get items(){return items}, get claw(){return claw} };
+window.__GM = { clawHitAt, clawOverlap, itemHitMask, getClawHit, get showHitShapes(){return showHitShapes}, debugJump, goalForLevel, get explosions(){return explosions}, resetRun, dropClaw, useDynamite, layoutPads, detectTouchUI, get mode(){return mode}, get items(){return items}, get claw(){return claw} };

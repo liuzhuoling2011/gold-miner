@@ -55,6 +55,8 @@
   #dbgVar{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px;}
   #dbgVar button{font-size:13px;}
   #dbgGoal{font-size:12px;color:#9fe28f;margin-bottom:10px;min-height:16px;}
+  #dbgHitRow{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:12px;cursor:pointer;user-select:none;}
+  #dbgHitRow input{width:18px;height:18px;accent-color:#e0b84a;}
   #dbgAct{display:flex;gap:8px;}
   #dbgAct button{flex:1;height:38px;border-radius:8px;border:0;font:bold 15px "PingFang SC","Microsoft YaHei",sans-serif;cursor:pointer;}
   #dbgGo{background:#2e8b57;color:#fff;}
@@ -81,11 +83,12 @@
       <button type="button" data-v="3">布局3</button>
     </div>
     <div id="dbgGoal"></div>
+    <label id="dbgHitRow"><input type="checkbox" id="dbgHit"> 显示碰撞形状（钩爪红 / 物品青）</label>
     <div id="dbgAct"><button type="button" id="dbgClose">取消</button><button type="button" id="dbgGo">跳转</button></div>
   </div>
 </div>
-<script src="levels.js?v=11"></script>
-<script src="swing.js?v=11"></script>
-<script src="game.js?v=11"></script>
+<script src="levels.js?v=12"></script>
+<script src="swing.js?v=12"></script>
+<script src="game.js?v=12"></script>
 </body>
 </html>
