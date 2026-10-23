@@ -4,11 +4,12 @@
  * Physics/layouts/SFX from original SWF (CWS v6, 550×400 @18fps)
  */
 const W = 550, H = 400, FPS = 18;
-const ASSET_VER = '14';
+const ASSET_VER = '15';
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
 let padsReady = false;
+let dbgBtnReady = false;
 function fit() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   canvas.width = Math.round(W * dpr);
@@ -19,6 +20,7 @@ function fit() {
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
   if (padsReady) layoutPads();
+  if (typeof layoutDebugBtn === 'function' && dbgBtnReady) layoutDebugBtn();
 }
 fit();
 addEventListener('resize', () => { fit(); });
@@ -111,6 +113,17 @@ for (const k of ['gold_s','gold_m','gold_l','gold_xl','rock_m','rock_l','diamond
 
 const TITLE_PACK_3X = TITLE_PACK_2X.map(([k, u]) => [k, u.replace('@2x.webp', '@3x.webp')]);
 const PLAY_PACK_3X = PLAY_PACK_2X.map(([k, u]) => [k, u.replace('@2x.webp', '@3x.webp')]);
+// Vector re-renders from SWF (FFDec -zoom): 1x = zoom3, @2x = zoom6 (serves 3x screens too)
+for (let i = 1; i <= 7; i++) {
+  PLAY_PACK.push(['mouse_' + i, 'assets/items/walk/mouse_' + i + '.webp']);
+  PLAY_PACK.push(['mouseDia_' + i, 'assets/items/walk/mouse_dia_' + i + '.webp']);
+  PLAY_PACK_2X.push(['mouse_' + i, 'assets/items/walk/mouse_' + i + '@2x.webp']);
+  PLAY_PACK_2X.push(['mouseDia_' + i, 'assets/items/walk/mouse_dia_' + i + '@2x.webp']);
+}
+for (let i = 1; i <= 14; i++) {
+  PLAY_PACK.push(['tntBoom' + i, 'assets/fx/tnt/boom_' + i + '.webp']);
+  PLAY_PACK_2X.push(['tntBoom' + i, 'assets/fx/tnt/boom_' + i + '@2x.webp']);
+}
 
 
 
@@ -338,6 +351,52 @@ const ITEM_DEFS = {
   tnt:      { object: 9,  price: 1,   weight: 2, r: 18, key: 'tnt', tnt: true },
 };
 
+// Every T{n} wraps its art clip "ob" at this scale (DefineSprite_317/319/322/330…)
+const OB_SCALE = 0.595932;
+const OB_SCALE_BY_KEY = { gold_s: 0.3136444, gold_l: 1.1769714, gold_xl: 1.5345306 };
+
+// ---- Mice: DefineSprite_316 (mouse) / 318 (diamond mouse), 213-frame timeline @18fps ----
+// Walker (sprite 271/275, 7-frame leg cycle) is tweened along X; the art faces left.
+//  f1–78   walk left  3.55 → −382.85 px (sprite-316 space)  ≈ 5.02 px/f
+//  f79–102 stand, facing right; f80: gotoAndPlay(_currentframe + random(20) + 1)
+//  f103–187 walk right −382.85 → −6.45                       = 4.60 px/f
+//  f188–213 stand at 3.55, facing left; f189: same random skip; then loop to f1
+// Stage = spot + spot.sx × OB_SCALE × local  → ≈2.99 / 2.74 px per frame, 230 px span.
+const MOUSE_HOME_X = 3.55, MOUSE_FAR_X = -382.85, MOUSE_Y = 3.15;
+const MOUSE_BOUNDS = { mouse: [-22.64, -17.15, 45.78, 33.73], mouseDia: [-24.68, -17.15, 47.82, 33.73] };
+function mousePose(f) {
+  if (f <= 78) return { x: MOUSE_HOME_X + (MOUSE_FAR_X - MOUSE_HOME_X) * (f - 1) / 77, face: 1, walk: true, anim: ((f - 1) % 7) + 1 };
+  if (f <= 102) return { x: MOUSE_FAR_X, face: -1, walk: false, anim: 1 };
+  if (f <= 187) return { x: MOUSE_FAR_X + 4.6 * (f - 103), face: -1, walk: true, anim: ((f - 103) % 7) + 1 };
+  return { x: MOUSE_HOME_X, face: 1, walk: false, anim: 1 };
+}
+function advanceMouse(it) {
+  let f = it.walkF + 1;
+  if (f > 213) f = 1;
+  // frame 80 / 189 DoAction: gotoAndPlay(_currentframe + random(20) + 1)
+  if (f === 80 || f === 189) f = f + ((Math.random() * 20) | 0) + 1;
+  it.walkF = f;
+  const p = mousePose(f);
+  it.walkX = p.x;
+  it.face = p.face;
+  it.anim = p.anim;
+  // SWF keeps .ob.box at the spawn point; remake moves the hit box with the body
+  it.x = it.baseX + it.sx * OB_SCALE * (p.x - MOUSE_HOME_X);
+}
+
+// ---- TNT: DefineSprite_330 frame 2 → explosion clip 253 @(3.65,2.85)×2.2416 + sound 254 ----
+// Clip 253 frame 9 places "box" (shape40 ±6.2 px) @(0.3,−1.75) × (6.9598, 6.2580); frames 9–13
+// its enterFrame hitTests every _root.T{n}.ob.box → T.gotoAndStop(2) (items vanish, TNT chains).
+const TNT_FX = { x: 3.65, y: 2.85, s: 2.241623, bounds: [-66.33, -61.24, 130.48, 122.47] };
+const TNT_BLAST = {
+  ox: TNT_FX.x + 0.3 * TNT_FX.s,          // ≈ 4.32
+  oy: TNT_FX.y - 1.75 * TNT_FX.s,         // ≈ −1.07
+  hx: 6.2 * 6.9598236 * TNT_FX.s,         // ≈ 96.7 px half-width
+  hy: 6.2 * 6.2580414 * TNT_FX.s,         // ≈ 87.0 px half-height
+  frameOn: 9, frameOff: 13, frames: 14,
+};
+let explosions = [];
+
 const SWING = (typeof GM_SWING !== 'undefined' && GM_SWING.length) ? GM_SWING : (() => {
   const a = [];
   for (let i = 0; i < 87; i++) a.push(Math.sin(i / 86 * Math.PI * 2) * 67);
@@ -519,7 +578,14 @@ function rollBag() {
   return 800;
 }
 
+let forcedVariant = 0; // debug: 1..3 picks L{lv}_{v} once
 function pickLevelLayout(lv) {
+  if (forcedVariant && window.GM_LEVELS && GM_LEVELS['L' + lv + '_' + forcedVariant]) {
+    const k = 'L' + lv + '_' + forcedVariant;
+    forcedVariant = 0;
+    return GM_LEVELS[k];
+  }
+  forcedVariant = 0;
   const variants = [1, 2, 3].map(v => 'L' + lv + '_' + v).filter(k => window.GM_LEVELS && GM_LEVELS[k]);
   if (!variants.length) return null;
   return GM_LEVELS[variants[(Math.random() * variants.length) | 0]];
@@ -545,14 +611,20 @@ function startLevel() {
   minerAnim = 1;
   stopPant();
   items = [];
+  explosions = [];
   const layout = pickLevelLayout(level);
   if (layout) {
     for (const spot of layout) {
       const def = ITEM_DEFS[spot.key];
       if (!def) continue;
-      const sc = (spot.sx + spot.sy) / 2;
+      // Flipped spots (sx = −1, e.g. right-walking mice) must not collapse to size 0
+      const asx = Math.abs(spot.sx), asy = Math.abs(spot.sy);
+      const sc = (asx + asy) / 2;
       const box = ITEM_BOX[def.key] || { sx: 2.5, sy: 2.5, ox: 0, oy: 0 };
+      const walker = def.key === 'pig' || def.key === 'diamond_m';
       items.push({
+        walker, walkF: 1, walkX: MOUSE_HOME_X, face: 1, anim: 1, baseX: spot.x,
+        obScale: OB_SCALE_BY_KEY[def.key] || OB_SCALE,
         x: spot.x, y: spot.y,
         r: def.r * sc,
         sx: spot.sx, sy: spot.sy,
@@ -560,8 +632,8 @@ function startLevel() {
         price: priceOf(def), weight: weightOf(def),
         alive: true, object: def.object,
         // Flash AABB half-extents of .ob.box in stage px
-        boxHx: TIP_HALF * box.sx * spot.sx,
-        boxHy: TIP_HALF * box.sy * spot.sy,
+        boxHx: TIP_HALF * box.sx * asx,
+        boxHy: TIP_HALF * box.sy * asy,
         boxOx: box.ox * spot.sx,
         boxOy: box.oy * spot.sy,
       });
@@ -686,6 +758,48 @@ function grabItem(it) {
   stopPant();
   playSfx('hit', 0.5);
   playSfx('grab', 0.35);
+  // SWF 281 hitTest → T.gotoAndStop(2): TNT bursts where it stood; claw keeps debris (grab_9, $1, w2)
+  if (it.def && it.def.tnt) explodeTnt(it);
+}
+
+function explodeTnt(it) {
+  it.alive = false;
+  explosions.push({ x: it.baseX != null ? it.baseX : it.x, y: it.y, sx: it.sx || 1, sy: it.sy || 1, f: 1 });
+  playSfx('boom', 0.75);
+}
+
+/** Per-frame: advance explosion clips; blast box live on clip frames 9–13 (chain-reacts TNT). */
+function advanceExplosions() {
+  if (!explosions.length) return;
+  const fresh = [];
+  for (const ex of explosions) {
+    ex.f++;
+    if (ex.f >= TNT_BLAST.frameOn && ex.f <= TNT_BLAST.frameOff) {
+      const ax = Math.abs(ex.sx), ay = Math.abs(ex.sy);
+      const bx = ex.x + TNT_BLAST.ox * ex.sx, by = ex.y + TNT_BLAST.oy * ex.sy;
+      const bhx = TNT_BLAST.hx * ax, bhy = TNT_BLAST.hy * ay;
+      for (const it of items) {
+        if (!it.alive || it === claw.caught) continue;
+        // item .ob.box AABB in stage px (ITEM_BOX × ob clip scale)
+        const ob = it.obScale || OB_SCALE;
+        const cx = it.x + (it.boxOx || 0) * ob, cy = it.y + (it.boxOy || 0) * ob;
+        const hx = (it.boxHx || it.r * 0.7) * ob, hy = (it.boxHy || it.r * 0.7) * ob;
+        if (Math.abs(cx - bx) <= bhx + hx && Math.abs(cy - by) <= bhy + hy) {
+          if (it.def && it.def.tnt) {
+            it.alive = false;
+            fresh.push({ x: it.baseX != null ? it.baseX : it.x, y: it.y, sx: it.sx || 1, sy: it.sy || 1, f: 1 });
+          } else {
+            it.alive = false;
+          }
+        }
+      }
+    }
+  }
+  explosions = explosions.filter(ex => ex.f <= TNT_BLAST.frames);
+  if (fresh.length) {
+    explosions.push(...fresh);
+    playSfx('boom', 0.75);
+  }
 }
 
 function finishPull() {
@@ -791,6 +905,8 @@ function logicStep() {
   }
   if (boomFx) { boomFx.life -= dt; if (boomFx.life <= 0) boomFx = null; }
   advanceDynamiteToss();
+  for (const it of items) if (it.alive && it.walker) advanceMouse(it);
+  advanceExplosions();
 
   // timer ~1s per SWF sprite 188 tick
   timeLeft -= dt;
@@ -872,6 +988,7 @@ function logicStep() {
 }
 
 function update(dt) {
+  if (debugOpen) return; // modal pauses the game
   if (mode === 'shop' && shopExitTimer > 0) {
     shopExitTimer -= dt;
     if (shopExitTimer <= 0) {
@@ -1081,6 +1198,7 @@ function drawItems() {
   for (const it of items) {
     if (!it.alive) continue;
     if (claw.caught === it) continue; // drawn nested under claw in drawClaw
+    if (it.walker) { drawMouse(it); continue; }
     const im = images[it.key];
     if (im) {
       const s = it.r * 2.15;
@@ -1089,6 +1207,44 @@ function drawItems() {
       ctx.fillStyle = '#daa520';
       ctx.beginPath(); ctx.arc(it.x, it.y, it.r, 0, Math.PI * 2); ctx.fill();
     }
+  }
+}
+
+/** Mouse / diamond mouse: SWF walker clip (271/275) at its tweened X, mirrored per facing. */
+function drawMouse(it) {
+  const dia = it.key === 'diamond_m';
+  const im = images[(dia ? 'mouseDia_' : 'mouse_') + (it.anim || 1)];
+  const k = it.sx * OB_SCALE, ky = Math.abs(it.sy) * OB_SCALE;
+  ctx.save();
+  ctx.translate(it.baseX, it.y);
+  ctx.scale(k, ky);
+  ctx.translate(it.walkX, MOUSE_Y);
+  ctx.scale(it.face || 1, 1);
+  if (im) {
+    const b = MOUSE_BOUNDS[dia ? 'mouseDia' : 'mouse'];
+    ctx.drawImage(im, b[0], b[1], b[2], b[3]);
+  } else {
+    const st = images[it.key];
+    if (st) {
+      const w = 46, h = w * st.height / st.width;
+      ctx.drawImage(st, -w / 2, -h / 2, w, h);
+    }
+  }
+  ctx.restore();
+}
+
+function drawExplosions() {
+  for (const ex of explosions) {
+    const im = images['tntBoom' + Math.min(14, Math.max(1, ex.f))];
+    if (!im) continue;
+    const b = TNT_FX.bounds;
+    ctx.save();
+    ctx.translate(ex.x, ex.y);
+    ctx.scale(ex.sx, ex.sy);
+    ctx.translate(TNT_FX.x, TNT_FX.y);
+    ctx.scale(TNT_FX.s, TNT_FX.s);
+    ctx.drawImage(im, b[0], b[1], b[2], b[3]);
+    ctx.restore();
   }
 }
 
@@ -1281,12 +1437,105 @@ function render() {
   else {
     drawPlayBg();
     drawItems();
+    drawExplosions();
     drawClaw();
     drawMiner();
     drawHUD();
     drawFloats();
     drawTouchControls();
   }
+}
+
+// ----- Debug level jump (bottom-right chip inside the canvas) -----
+const dbgBtn = document.getElementById('dbgBtn');
+const dbgModal = document.getElementById('dbgModal');
+const dbgLv = document.getElementById('dbgLv');
+const dbgVar = document.getElementById('dbgVar');
+const dbgGoalEl = document.getElementById('dbgGoal');
+let debugOpen = false;
+let dbgPickLv = 1, dbgPickVar = 0;
+/** Goal/goalAddOn the original reaches on level n (L1 goal 650, addOn 275, +270 per level). */
+function goalForLevel(n) {
+  let add = 275, g = 375 + add;
+  for (let k = 2; k <= n; k++) { add += 270; g += add; }
+  return { goal: g, goalAddOn: add };
+}
+function layoutDebugBtn() {
+  if (!dbgBtn) return;
+  const r = canvas.getBoundingClientRect();
+  const bw = dbgBtn.offsetWidth || 48, bh = dbgBtn.offsetHeight || 20;
+  const inset = Math.max(4, Math.round(r.width * 0.008));
+  dbgBtn.style.left = Math.round(r.right - bw - inset) + 'px';
+  dbgBtn.style.top = Math.round(r.bottom - bh - inset) + 'px';
+}
+function syncDebugBtn() {
+  if (!dbgBtn) return;
+  dbgBtn.classList.toggle('on', !debugOpen && document.getElementById('load').classList.contains('hide'));
+  layoutDebugBtn();
+}
+function renderDebugPicker() {
+  dbgLv.querySelectorAll('button').forEach(b => b.classList.toggle('sel', +b.dataset.lv === dbgPickLv));
+  dbgVar.querySelectorAll('button').forEach(b => b.classList.toggle('sel', +b.dataset.v === dbgPickVar));
+  const g = goalForLevel(dbgPickLv);
+  const n = dbgPickVar ? ((GM_LEVELS['L' + dbgPickLv + '_' + dbgPickVar] || []).length) : 0;
+  dbgGoalEl.textContent = '第 ' + dbgPickLv + ' 关 · 目标 $' + g.goal + (n ? ' · ' + n + ' 个物品' : '');
+}
+function openDebug() {
+  debugOpen = true;
+  dbgPickLv = Math.min(10, Math.max(1, level || 1));
+  renderDebugPicker();
+  dbgModal.classList.add('on');
+  dbgModal.setAttribute('aria-hidden', 'false');
+  syncDebugBtn();
+}
+function closeDebug() {
+  debugOpen = false;
+  dbgModal.classList.remove('on');
+  dbgModal.setAttribute('aria-hidden', 'true');
+  lastTs = 0; logicAcc = 0;
+  syncDebugBtn();
+}
+function debugJump(lv, variant) {
+  lv = Math.min(10, Math.max(1, lv | 0));
+  if (mode === 'title' || mode === 'win') {
+    score = 0; stick = 0;
+    rockBonus = 0; diamondBonus = 0; cloverBonus = 0; strengthBoost = 0;
+  }
+  minerStrength = BASE_STRENGTH;
+  strengthFlag = 0;
+  const g = goalForLevel(lv);
+  level = lv; levelDis = lv;
+  goal = g.goal; goalAddOn = g.goalAddOn;
+  forcedVariant = variant | 0;
+  stopPant();
+  dynToss = null; boomFx = null; explosions = [];
+  shopExitTimer = 0;
+  showGoal();
+}
+if (dbgLv) {
+  for (let i = 1; i <= 10; i++) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.dataset.lv = String(i); b.textContent = String(i);
+    dbgLv.appendChild(b);
+  }
+  const stop = (e) => { e.stopPropagation(); };
+  dbgModal.addEventListener('mousedown', stop);
+  dbgModal.addEventListener('touchstart', stop, { passive: true });
+  dbgLv.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    dbgPickLv = +b.dataset.lv; renderDebugPicker();
+  });
+  dbgVar.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    dbgPickVar = +b.dataset.v; renderDebugPicker();
+  });
+  document.getElementById('dbgGo').addEventListener('click', () => { closeDebug(); debugJump(dbgPickLv, dbgPickVar); });
+  document.getElementById('dbgClose').addEventListener('click', closeDebug);
+  dbgModal.addEventListener('click', (e) => { if (e.target === dbgModal) closeDebug(); });
+  dbgBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); });
+  dbgBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); unlockAudio(); openDebug(); });
+  addEventListener('resize', layoutDebugBtn);
+  addEventListener('orientationchange', () => setTimeout(layoutDebugBtn, 80));
 }
 
 // ----- Input -----
@@ -1377,6 +1626,11 @@ canvas.addEventListener('touchstart', (e) => { e.preventDefault(); onPointer(e);
 
 addEventListener('keydown', (e) => {
   unlockAudio();
+  if (debugOpen) {
+    if (e.code === 'Escape') closeDebug();
+    if (e.code === 'Enter') { closeDebug(); debugJump(dbgPickLv, dbgPickVar); }
+    return;
+  }
   if (e.code === 'ArrowDown' || e.code === 'Space') { e.preventDefault(); dropClaw(); }
   if (e.code === 'ArrowUp' || e.code === 'KeyD') { e.preventDefault(); useDynamite(); }
   // ←/→ force pull-up like SWF
@@ -1421,13 +1675,14 @@ function frame(ts) {
     }
     setLoad(0.12);
     document.getElementById('load').classList.add('hide');
+    syncDebugBtn();
     requestAnimationFrame(frame);
 
     // Phase 2: critical play (bg + miner idle + hook + shop)
     const critical = new Set(['playBg','goalSplash','shopBg','shopBgHappy','shopBgAngry','shopNext',
       'minerIdle','minerDown','minerPull','minerUp','minerThrow1','minerThrow2','minerThrow3',
       'hookOpen','hookClosed','grab_2','grab_3','grab_4','grab_5','grab_6','grab_7','grab_8','grab_9','grab_10','grab_11','grab_12','grab_13','grab_14']);
-    const phase2 = PLAY_PACK.filter(([k]) => critical.has(k) || k.startsWith('gold_') || k.startsWith('rock_') || k.startsWith('diamond_') || ['bag','bone','pig','skull','tnt'].includes(k) || k.startsWith('shop'));
+    const phase2 = PLAY_PACK.filter(([k]) => critical.has(k) || k.startsWith('gold_') || k.startsWith('rock_') || k.startsWith('diamond_') || ['bag','bone','pig','skull','tnt'].includes(k) || k.startsWith('mouse') || k.startsWith('shop'));
     const phase3 = PLAY_PACK.filter(([k]) => !phase2.find(p => p[0] === k));
 
     let done = 0;
@@ -1449,4 +1704,5 @@ function frame(ts) {
   }
 })();
 
-window.__GM = { resetRun, dropClaw, useDynamite, layoutPads, detectTouchUI, get mode(){return mode}, get items(){return items}, get claw(){return claw} };
+dbgBtnReady = true;
+window.__GM = { debugJump, goalForLevel, get explosions(){return explosions}, resetRun, dropClaw, useDynamite, layoutPads, detectTouchUI, get mode(){return mode}, get items(){return items}, get claw(){return claw} };
