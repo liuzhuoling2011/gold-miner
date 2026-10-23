@@ -4,7 +4,7 @@
  * Physics/layouts/SFX from original SWF (CWS v6, 550×400 @18fps)
  */
 const W = 550, H = 400, FPS = 18;
-const ASSET_VER = '15';
+const ASSET_VER = '16';
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
