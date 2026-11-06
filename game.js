@@ -295,6 +295,7 @@ const MINER_DRAW_SCALE = 0.42; // ~SWF 0.389, slight bump for readability
 const DROP_PX_PER_FRAME = 9.86;       // timeline Y step
 const PULL_PX_PER_FRAME = 1.385;      // claw Y step on pull timeline
 const BASE_STRENGTH = 10;
+const MAX_LEVEL = 15; // original 10 + custom hard extras L11–L15
 const LEN_MIN = 12.45;
 const LEN_MAX = 407;
 const PULL_FRAME_MAX = 20; // DefineSprite_238 pull loop before throw label
@@ -1042,11 +1043,11 @@ function leaveShop() {
 }
 
 function nextLevel() {
-  if (levelDis <= 9) goalAddOn += 270;
+  if (levelDis < MAX_LEVEL) goalAddOn += 270;
   goal += goalAddOn;
   levelDis += 1;
   level += 1;
-  if (level > 10) { mode = 'win'; syncPadsVisibility(); return; }
+  if (level > MAX_LEVEL) { mode = 'win'; syncPadsVisibility(); return; }
   showGoal();
 }
 
@@ -1618,7 +1619,7 @@ const dbgVar = document.getElementById('dbgVar');
 const dbgGoalEl = document.getElementById('dbgGoal');
 let debugOpen = false;
 let dbgPickLv = 1, dbgPickVar = 0;
-/** Goal/goalAddOn the original reaches on level n (L1 goal 650, addOn 275, +270 per level). */
+/** Goal/goalAddOn for level n (L1 goal 650, addOn 275, +270 per level through MAX_LEVEL). */
 function goalForLevel(n) {
   let add = 275, g = 375 + add;
   for (let k = 2; k <= n; k++) { add += 270; g += add; }
@@ -1646,7 +1647,7 @@ function renderDebugPicker() {
 }
 function openDebug() {
   debugOpen = true;
-  dbgPickLv = Math.min(10, Math.max(1, level || 1));
+  dbgPickLv = Math.min(MAX_LEVEL, Math.max(1, level || 1));
   renderDebugPicker();
   dbgModal.classList.add('on');
   dbgModal.setAttribute('aria-hidden', 'false');
@@ -1660,7 +1661,7 @@ function closeDebug() {
   syncDebugBtn();
 }
 function debugJump(lv, variant) {
-  lv = Math.min(10, Math.max(1, lv | 0));
+  lv = Math.min(MAX_LEVEL, Math.max(1, lv | 0));
   if (mode === 'title' || mode === 'win') {
     score = 0; stick = 0;
     rockBonus = 0; diamondBonus = 0; cloverBonus = 0; strengthBoost = 0;
@@ -1677,7 +1678,7 @@ function debugJump(lv, variant) {
   showGoal();
 }
 if (dbgLv) {
-  for (let i = 1; i <= 10; i++) {
+  for (let i = 1; i <= MAX_LEVEL; i++) {
     const b = document.createElement('button');
     b.type = 'button'; b.dataset.lv = String(i); b.textContent = String(i);
     dbgLv.appendChild(b);
